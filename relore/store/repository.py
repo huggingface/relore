@@ -728,6 +728,8 @@ def touch_pass(conn: Connection, repo: str, pass_name: str, *, ok: bool = False)
 
 
 def index_summary(conn: Connection) -> dict[str, Any]:
+    from relore.freshness import COLLECTOR_NOTE, pass_note
+
     def count(table: Any) -> int:
         return int(conn.execute(select(func.count()).select_from(table)).scalar_one())
 
@@ -735,6 +737,7 @@ def index_summary(conn: Connection) -> dict[str, Any]:
         {
             "repo": row.repo,
             "pass": getattr(row, "pass"),
+            "note": pass_note(getattr(row, "pass")),
             "high_water": row.high_water.isoformat() if row.high_water else None,
             "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
             "last_ok_at": row.last_ok_at.isoformat() if row.last_ok_at else None,
@@ -755,6 +758,7 @@ def index_summary(conn: Connection) -> dict[str, Any]:
         # symptom of a capture that silently stopped working.
         "superseded_documents": count(s.documents_history),
         "passes": passes,
+        "passes_note": COLLECTOR_NOTE,
         # Section 10: a recall number from a sampled corpus is only comparable against a
         # baseline restricted to the same window, so the window is part of the status.
         "samples": [

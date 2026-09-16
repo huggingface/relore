@@ -741,8 +741,13 @@ def _status(args: argparse.Namespace) -> int:
     # Section 14.1: nothing searches the history, so this count is the only way to see the
     # capture is working. Zero after a long-running poll is a symptom, not a quiet corpus.
     print(f"history   {payload['superseded_documents']} superseded documents kept")
+    print(payload["passes_note"])
     for row in payload["passes"]:
-        print(f"  {row['repo']} [{row['pass']}] high-water {row['high_water']}")
+        note = f" ({row['note']})" if row["note"] else ""
+        print(
+            f"  {row['repo']} [{row['pass']}] high-water {row['high_water']} "
+            f"last-ok {row['last_ok_at']}{note}"
+        )
     # Loud, and above the pass list on purpose: a sampled corpus that reads as a full
     # history is how a recall number ends up compared with a baseline that saw more.
     for row in payload["samples"]:

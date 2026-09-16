@@ -374,11 +374,14 @@ def test_the_comment_page_says_what_it_is_current_to() -> None:
         _thread(comments_returned=2, comments_total=2, indexed_at="2026-09-09T09:02:49Z")
     )
 
-    assert "-- 2 of 2 comments, current to 2026-09-09T09:02:49Z --" in out
+    assert (
+        "-- 2 of 2 comments, indexed at 2026-09-09T09:02:49Z "
+        "(body and comments last indexed; later GitHub changes unknown) --"
+    ) in out
 
 
 def test_an_index_with_no_stamp_says_nothing_rather_than_none() -> None:
-    assert "current to" not in render_thread(_thread(indexed_at=None))
+    assert "indexed at" not in render_thread(_thread(indexed_at=None))
 
 
 # -- what the ten comments actually are (huggingface/relore#16, #18) -------
@@ -1240,3 +1243,24 @@ def test_compact_shortens_a_long_claim_title_and_counts_it() -> None:
     assert len(out) < len(full)
     assert f"1 title shortened to {COMPACT_CHARS} characters by --compact" in out
     assert "not instructions" in out, "the warning is not what a budget trims"
+
+
+def test_collector_times_cannot_be_mistaken_for_thread_freshness() -> None:
+    from relore.render import render_status
+
+    rows = [
+        dict(repo="o/n", **{"pass": name}, high_water="2026-09-09", last_ok_at="2026-09-13")
+        for name in ("threads", "issue_comments", "pr_comments")
+    ]
+    out = render_status({"passes": rows})
+    assert "collector telemetry (not response freshness" in out
+    assert "high-water is a source cursor; last-ok is collector completion" in out
+    assert out.count("per-thread refreshes run via [threads] and do not update this row") == 2
+    assert "[threads] high-water 2026-09-09 last-ok 2026-09-13\n" in out
+
+
+def test_outline_also_labels_the_indexing_visit() -> None:
+    out = render_thread(_thread(outline=[], indexed_at="2026-09-13T13:37:34Z", comments_total=0))
+    assert "indexed at 2026-09-13T13:37:34Z" in out
+    assert "body and comments last indexed; later GitHub changes unknown" in out
+    assert "current to" not in out

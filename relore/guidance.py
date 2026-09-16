@@ -138,7 +138,7 @@ Before changing unfamiliar code, ask it why the code is the way it is:
     relore search "<the error, symbol, or question>" --kind failure|rationale|precedent
     relore search "<question>" --file <path>   # scope to a file
     relore thread <number> --focus "<what you care about>" --repo {repo}
-    relore status                              # what the index is current to
+    relore status                              # index coverage and collector telemetry
 
 {UNTRUSTED}"""
 

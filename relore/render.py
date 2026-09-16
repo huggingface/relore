@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from relore.freshness import COLLECTOR_NOTE, THREAD_STAMP_NOTE, pass_note
 from relore.security.untrusted import envelope, quote
 
 #: What each tier is called in front of a snippet. Four tokens, and the difference between
@@ -313,7 +314,7 @@ def _outline_lines(
         # louder here than a cap normally would be.
         clauses.append(f"CAPPED at {shown}: {reachable - shown} more this view did not reach")
     if thread.get("indexed_at"):
-        clauses.append(f"current to {thread['indexed_at']}")
+        clauses.append(f"indexed at {thread['indexed_at']} ({THREAD_STAMP_NOTE})")
     lines = [", ".join(clauses) + " --"]
     for index, entry in enumerate(outline, start=1):
         tier = TRUST_LABEL.get(str(entry.get("trust")), str(entry.get("trust")))
@@ -436,13 +437,9 @@ def render_thread(
         # The selection, named. Ten comments under a bare count read as the ten best, and
         # an agent that believes it has read the best ten stops (huggingface/relore#16).
         clauses.append("SAMPLED not ranked: the first and last few and a spread of the middle")
-    # Per-response freshness (huggingface/relore#32). `status` reports it per ingestion
-    # source, and two runs have now composed those rows into opposite wrong conclusions
-    # about one thread -- once too trusting, once not enough. The only question a reader
-    # asks before acting is whether *these* comments are current, so the answer travels
-    # with them instead of being assembled from a strip.
+    # This is an indexing visit, not proof of completeness (huggingface/relore#46).
     if thread.get("indexed_at"):
-        clauses.append(f"current to {thread['indexed_at']}")
+        clauses.append(f"indexed at {thread['indexed_at']} ({THREAD_STAMP_NOTE})")
     head = ", ".join([f"-- {returned} of {total} comments", *clauses])
     lines.append(head + " --")
     if not returned and thread.get("after") and visible:
@@ -1031,10 +1028,12 @@ def render_status(payload: dict[str, Any]) -> str:
         f"index     {payload.get('threads')} threads, {payload.get('documents')} documents, "
         f"{payload.get('raw_objects')} raw objects",
     ]
+    lines.append(payload.get("passes_note") or COLLECTOR_NOTE)
     for row in payload.get("passes") or []:
         lines.append(
             f"  {row['repo']} [{row['pass']}] high-water {row['high_water']} "
             f"last-ok {row['last_ok_at']}"
+            + (f" ({note})" if (note := row.get("note") or pass_note(row["pass"])) else "")
         )
     usage = payload.get("usage")
     if usage:

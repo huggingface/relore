@@ -28,7 +28,7 @@ first; this page is the long form.
 | `thread N` | one thread. `--focus "…"` orders its comments and never empties them; `--full` serves the opening post whole, reproduction included |
 | `inflight N` | is somebody already fixing this? Threads claiming to close `N`, open ones first |
 | `why PATH:LINE` | the pull request that last changed this line, and the review comments anchored near it |
-| `status` | counts, per-source freshness, and which search backend answered |
+| `status` | counts, collector telemetry, and which search backend answered |
 | `grep REGEX` | a regular expression over the daemon's working clone at HEAD. `--path` globs it |
 | `symbol QUALNAME` | one definition's source, and how many definitions of that name exist |
 | `copies SYMBOL` | every definition of a symbol, grouped by whether the bodies agree. `--exact` groups by the text |
@@ -268,7 +268,7 @@ six different `--focus` strings and spent 3,558 tokens seeing overlapping sample
 
 ```
 $ relore thread 37866 --outline --repo huggingface/transformers
--- outline: 70 of 70 comments, oldest first, 2 machine-tier suppressed, current to … --
+-- outline: 70 of 70 comments, oldest first, 2 machine-tier suppressed, indexed at … (body and comments last indexed; later GitHub changes unknown) --
   1. 2091231498  [authoritative]  16mo  review_comment  @Cyrilvallez
 > Unfortunately torch.compile.disable is just a graph break, so this won…
   2. 2091240011  [contributor claim]  16mo  issue_comment  @bob
@@ -419,18 +419,17 @@ not mean:
 many of them this view withheld. The difference is what the cap and the sampling compose
 with, so a suppressed comment never shows up as one the page ran out of room for.
 
-**Each page says what it is current to.** `status` reports freshness per ingestion source,
-and nobody can compose `[issue_comments]` and `[threads]` into an answer about one thread —
-two field runs tried and got it wrong in opposite directions, once trusting comments that
-were stale and once discounting comments that were complete. So the answer travels with the
-response, as `indexed_at` in `--json`:
+**Each page records when its body and comments were last indexed**, as `indexed_at`
+in `--json`, with `indexed_at_note` explaining its scope:
 
 ```
--- 2 of 2 comments, current to 2026-09-09T09:02:49Z --
+-- 2 of 2 comments, indexed at 2026-09-09T09:02:49Z (body and comments last indexed; later GitHub changes unknown) --
 ```
 
-It is when this thread was last rebuilt from GitHub. Keep the `status` rows for what they
-are good at, which is the operator's view of ingestion.
+This records an indexing visit, not a completeness guarantee or an atomic GitHub snapshot.
+`status` reports collector telemetry: high-water is a source cursor and last-ok is collector
+completion, neither the freshness of a given thread. Bulk `[issue_comments]` and
+`[pr_comments]` rows do not track per-thread refreshes via `[threads]`.
 
 **A long comment comes back as one hit, marked.** GitHub comments are chunked into several
 indexed documents, and two chunks of one comment used to arrive as two hits with the same
@@ -815,10 +814,11 @@ tells you which — that distinction is deliberate (§12).
 
 ```
 $ relore status
-version   0.3.16
+version   0.3.17
 backend   postgresql / ts_rank_cd  capabilities: fulltext, weighted
 schema    applied [1, 2, 3, 4, 5, 6, 7], pending []
 index     55168 threads, 517276 documents, 332 raw objects
+collector telemetry (not response freshness; use each thread's indexed_at): high-water is a source cursor; last-ok is collector completion
   huggingface/serge [threads] high-water 2026-09-03T06:55:06+00:00 last-ok …
   huggingface/transformers [threads] high-water 2026-09-12T18:41:02+00:00 last-ok …
   huggingface/trl [threads] high-water 2026-09-12T18:44:15+00:00 last-ok …

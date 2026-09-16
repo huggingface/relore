@@ -585,6 +585,14 @@ def test_a_thread_carries_when_it_was_last_rebuilt(engine: Engine, fake: FakeGit
     assert view.indexed_at is not None
     assert view.indexed_at >= before
 
+    from relore.api.schemas import thread_json
+
+    payload = thread_json(view)
+    assert payload["indexed_at"] is not None
+    assert payload["indexed_at_note"] == (
+        "body and comments last indexed; later GitHub changes unknown"
+    )
+
 
 def test_a_truncated_changed_file_list_carries_its_denominator(
     engine: Engine, fake: FakeGitHub

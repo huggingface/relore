@@ -34,7 +34,7 @@ The daemon says which of these it can do rather than asking you to trust a docum
 
 ```
 $ relore status
-version      0.3.16
+version      0.3.17
 backend      postgresql / ts_rank_cd  capabilities: fulltext, weighted
 ```
 

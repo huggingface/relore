@@ -905,3 +905,19 @@ def test_every_page_helper_is_declared_before_it_is_used() -> None:
             f"{name} is used at offset {used} but only declared at {declared}; "
             "at load time that is a ReferenceError which kills the whole page script"
         )
+
+
+def test_status_json_distinguishes_bulk_collectors_from_response_freshness(
+    client: TestClient, engine: Engine
+) -> None:
+    from relore.store.repository import touch_pass
+
+    with engine.begin() as conn:
+        for name in ("threads", "issue_comments", "pr_comments"):
+            touch_pass(conn, "o/n", name)
+    payload = client.get("/api/v1/status").json()
+    assert "not response freshness" in payload["passes_note"]
+    rows = {row["pass"]: row for row in payload["passes"]}
+    for name in ("issue_comments", "pr_comments"):
+        assert "do not update this row" in rows[name]["note"]
+    assert rows["threads"]["note"] == ""

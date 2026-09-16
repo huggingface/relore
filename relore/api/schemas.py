@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from relore.freshness import THREAD_STAMP_NOTE
 from relore.search.queries import (
     HUMAN_TRUST,
     MACHINE_TRUST,
@@ -330,6 +331,7 @@ def thread_json(view: ThreadView, *, compact: bool = False) -> dict[str, Any]:
         # (huggingface/relore#32). A string, not a datetime: `render` takes plain JSON
         # shapes and must read the same on both sides of the wire.
         "indexed_at": _stamp(view.indexed_at),
+        "indexed_at_note": THREAD_STAMP_NOTE,
         # HOW those comments were chosen. A positional sample and a ranked top ten look
         # identical on the page, and the first five and last five of a 97-comment thread
         # were read as its ten best (huggingface/relore#16).

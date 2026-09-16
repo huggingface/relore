@@ -68,7 +68,8 @@ already call an HTTP API.
 | **The code, server-side** | `why PATH:LINE`, `grep`, `copies`, `symbol`, and `defs`/`refs` with `--repo`, against a working clone the daemon keeps |
 | **Throughput** | every query is a Postgres query and makes no GitHub request; ten agents in parallel cost the same as one |
 
-The trade is freshness: an answer is at most one poll interval behind.
+The trade is freshness: each thread records its last indexing visit; later GitHub changes
+are unknown. Collector poll times do not guarantee freshness for every thread.
 [Why not GitHub search](docs/why-not-github-search.md) has the measurements.
 
 Running the daemon needs a Postgres and a GitHub token with `issues:read` +

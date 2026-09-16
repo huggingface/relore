@@ -287,7 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("location", metavar="PATH:LINE")
     w.add_argument("--repo", help=_REPO_HELP)
 
-    sub.add_parser("status", help="index freshness and coverage")
+    sub.add_parser("status", help="index coverage and collector telemetry")
 
     m = sub.add_parser(
         "map",

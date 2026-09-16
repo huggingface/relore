@@ -483,7 +483,8 @@ async function health() {
           ? `<b class="working">indexing</b> ${ago(p.last_run_at)}${at}`
           : `ok ${short(p.last_ok_at)}`;
         return `<span class="pass"><b>${esc(p.pass)}</b>` +
-               ` high-water ${short(p.high_water)} · ${state}</span>`;
+               ` high-water ${short(p.high_water)} · ${state}` +
+               (p.note ? ` (${esc(p.note)})` : "") + `</span>`;
       }).join("");
       const badge = live.length
         ? `<b class="working">${live.length} indexing</b>`
@@ -498,7 +499,7 @@ async function health() {
       `<span><b>${n(s.threads)}</b> threads</span>` +
       `<span><b>${n(s.documents)}</b> documents</span>` +
       `<span><b>${n(s.raw_objects)}</b> staged</span>` +
-      `<div class="passes">${passes}${sampled}</div>`;
+      `<div class="passes">${esc(s.passes_note || "")}${passes}${sampled}</div>`;
     // The repo filter's options, deduped: a repo reports one pass per phase, so `passes`
     // names most of them several times. Rebuilt on every health call rather than once,
     // because the first call may have been refused and the second is the one that knows --
