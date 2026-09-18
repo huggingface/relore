@@ -125,6 +125,13 @@ def expand(query: SearchQuery) -> tuple[Leg, ...]:
     for name, term, override in derived:
         # No free text on a signal leg. That is the fix, not an omission: the caller's
         # terms are what ANDed to nothing, and the overlap filter is thread-level.
+        field = next(iter(override))
+        if getattr(query, field):
+            # The caller already scoped this kind. ``replace(..., **override)`` would
+            # drop that constraint (huggingface/relore#75); appending would OR-widen
+            # it, because values inside one signal filter are disjoined. Skip the
+            # derived leg -- the text and filters-only legs still carry the evidence.
+            continue
         legs.append(Leg(name=name, query=replace(query, text="", **override), term=term))
 
     # The caller's own filters, asked without their text. Section 10.3's control: on the

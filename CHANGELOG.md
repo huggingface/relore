@@ -6,6 +6,13 @@ The client and daemon must run the same version.
 
 ## [Unreleased]
 
+### Fixed
+
+- Expansion no longer replaces an explicit `--symbol` / `--file` / `--error` / `--test`
+  filter with a derived term from the query text. Same-kind values are ORed, so the
+  derived evidence stays on the text and filters-only legs instead of widening or
+  dropping the caller's scope (#75).
+
 ## [0.3.17] - 2026-09-18
 
 First PyPI release. Earlier versions were distributed from Git and deployed as
