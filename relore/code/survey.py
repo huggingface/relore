@@ -36,7 +36,7 @@ from typing import Any
 from relore.code.api import Definition
 from relore.code.defs import definitions
 from relore.code.registry import claimed
-from relore.code.walk import all_files, read, source_files
+from relore.code.walk import all_files, needle, read, source_files
 
 MAX_MATCHES = 500
 MAX_COPIES = 200
@@ -192,21 +192,18 @@ def _definitions_named(root: str, name: str) -> Iterator[tuple[str, Definition, 
     every claimed file to answer about one name -- 4,882 files on `transformers`, 6.5 s of
     the 7 s, against 0.46 s to read them all. The parse is the cost, not the tree.
 
-    A provider reads a name out of the source, so a file without the identifier in its bytes
-    cannot define it. Still a superset: a file that only mentions it is parsed and rejected
-    below. Matched on the **leaf** -- ``Foo.bar`` is spelled across two lines, so the dotted
-    form is in no file -- and only when that is ASCII, since a `coding:` declaration means
-    the bytes need not be UTF-8.
+    The filter itself is :func:`~relore.code.walk.needle`, shared with ``refs`` since issue
+    #83 applied the same argument there -- a superset keyed on the trailing identifier run,
+    and ``None`` for a non-ASCII name rather than a guess at an encoding.
     """
-    leaf = name.rsplit(".", 1)[-1]
-    needle = leaf.encode() if leaf.isascii() else None
+    wanted = needle(name)
     for path in source_files(root):
         if not claimed(path):
             continue
         raw = read(path)
         if raw is None:
             continue
-        if needle is not None and needle not in raw:
+        if wanted is not None and wanted not in raw:
             continue
         source = raw.decode("utf-8", "replace").splitlines()
         for definition in definitions(path, raw):
