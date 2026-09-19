@@ -330,6 +330,44 @@ Three rules follow, and forgetting any of them is felt by somebody else:
 `tests/integration/test_cli_client.py`. A test client that talks to `/api/v1` sends the
 header, because every real client does.
 
+## One cache directory, and one rule for what may go in it
+
+Every cache relore writes lives in a **`.relore/` directory**, and there is exactly one of
+them per tree: `<repository root>/.relore/` on the client, and a path on the PVC beside the
+working clones on the daemon — never a pod-local path, which evaporates on the next rollout
+and leaves a cache that looks like it works and never hits. One place to look, one thing to
+delete, and `RELORE_NO_CACHE` turns off every layer at once.
+
+The directory writes a `.gitignore` of `*` when it is created. `relore map` runs in whatever
+repository the caller is standing in, and a read-only tool does not get to put 4 MB of
+untracked noise in someone else's `git status`.
+
+**A cached answer is byte-identical to the uncached one.** Three rules keep that true, and
+issue #83 paid for each of them:
+
+1. **The key is the content, never a timestamp.** The timestamp-shaped key was built first
+   and measured faster — git's index sha plus `git diff-files`, 0.6 s against 1.0 s — and
+   removed, because git's "clean" is a comparison of *stat data*: under
+   `git update-index --assume-unchanged`, a cached `map` reported the previous definition
+   while the file on disk held a new one, and `RELORE_NO_CACHE` disagreed with it.
+2. **Everything that changes the answer is in the key**, not only the input. For the code
+   lens that is the *provider* — a `pip uninstall tree-sitter-python` moves every `.py` to
+   ctags and produces a different parse of identical bytes. For a daemon response it is the
+   **version**, because a body cached under one version and served to a client on another
+   has walked straight past the 426 handshake that exists to stop exactly that.
+3. **`RELORE_NO_CACHE`, plus a probe that asserts the two paths agree.**
+   `benchmarks/probes/code_lens.py` runs each verb both ways and fails on one differing
+   byte. Without it, "byte-identical" is a sentence in a docstring.
+
+Two things follow that are easy to get wrong. A verb whose freshness *is* the answer must be
+exempt: `status` reports how current the index is, and `inflight` answers "is somebody
+already working on this right now". And `defs` is exempt for a different reason — the same
+code runs inside `relored` against a historical blob at a document's commit, where a
+working-tree cache is not stale but actively wrong.
+
+→ `relore/code/cache.py`, `tests/unit/test_code_cache.py`. Issue #85 carries the two layers
+that do not exist yet: the daemon's cache of GitHub, and the client's cache of the daemon.
+
 ## Commands
 
 ```bash
