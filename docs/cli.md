@@ -599,6 +599,30 @@ both numbers are printed and the ranking divides by the second. Dunders are excl
 are the same name everywhere, and a top 40 of `__init__` is the same list for every Python
 project.
 
+### What they cost, and the `.relore/` directory
+
+Parsing is the whole cost of these verbs — on `huggingface/transformers` reading all 4,883
+claimed files takes 0.6 s and parsing them takes 16 s — so both speedups skip parses rather
+than reads.
+
+`refs` parses only the files whose bytes contain the name. That is 10.7 s → 0.5 s for a rare
+name and 10.9 s → 7.1 s for one written nearly everywhere: the filter is exactly as selective
+as the name is rare.
+
+`map` has no name to filter on, so it memoises instead. The first run writes a
+`.relore/` directory at the repository root and later runs read it: **18.5 s → 1.0 s**.
+
+Every file is still read and hashed on every call — only the parse is skipped — so an entry
+is fresh when its key equals the sha of the bytes on disk right now. Nothing consults a
+timestamp, and nothing asks git whether a file changed: git's "clean" is a comparison of
+stat data, and `git update-index --assume-unchanged` alone is enough to make it lie. An edit
+that leaves mtime untouched is seen; a dirty file is reparsed. The cache also holds no
+reference positions — those are recomputed every run.
+
+The directory ignores itself, so it does not appear in your `git status`; delete it whenever
+you like, and set `RELORE_NO_CACHE` to switch it off. With it off the output is
+byte-identical, which `benchmarks/probes/code_lens.py` checks on every run.
+
 ---
 
 ## "Why is this line like this?" (#9)

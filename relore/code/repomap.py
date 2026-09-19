@@ -40,10 +40,10 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from relore.code import registry
+from relore.code import cache, registry
 from relore.code.api import REFS, MissingParser
 from relore.code.registry import provider_for
-from relore.code.walk import read, source_files
+from relore.code.walk import source_files
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,17 @@ class RepoMap:
 
 
 def repo_map(root: str, *, limit: int = 40) -> RepoMap:
+    """The ranked map of ``root``, and the only writer of :mod:`relore.code.cache`.
+
+    ``map`` has no query symbol, so it cannot be prefiltered the way ``refs`` is -- visiting
+    everything *is* the verb -- and it already computes both halves of a cache entry, so it
+    is the one place population is free. 18.5 s -> 1.0 s on ``huggingface/transformers``.
+    ``RELORE_NO_CACHE`` takes the other path and must print the same bytes.
+
+    A definition is not a use of itself; counting it would give every copy of a duplicated
+    function a floor of one. That rule lives in :meth:`~relore.code.cache.Session.store`, so
+    the two paths cannot drift apart on it.
+    """
     registry.require_any()
     found: list[tuple[str, str, str, int, str]] = []  # qualname, name, kind, line, path
     calls: Counter[str] = Counter()
@@ -82,25 +93,28 @@ def repo_map(root: str, *, limit: int = 40) -> RepoMap:
     saw_refs = False
     defined: Counter[str] = Counter()
 
-    for path in source_files(root):
-        try:
-            provider = provider_for(path)
-        except MissingParser:
-            continue
-        source = read(path)
-        if source is None:
-            continue
-        files += 1
-        for d in provider.defs(path, source):
-            found.append((d.qualname, d.name, d.kind, d.start_line, path))
-            defined[d.name] += 1
-        if REFS in provider.capabilities:
-            saw_refs = True
-            for reference in provider.refs(path, source):
-                # A definition is not a use of itself, and counting it would give every
-                # copy of a duplicated function a floor of one.
-                if reference.kind != "definition":
-                    calls[reference.name] += 1
+    with cache.open_session(root) as session:
+        for path in source_files(root):
+            try:
+                provider = provider_for(path)
+            except MissingParser:
+                continue
+            entry, source = session.lookup(path, provider.name)
+            if entry is None:
+                if source is None:
+                    continue
+                entry = session.store(path, provider, source)
+            files += 1
+            for qualname, name, kind, line in entry.definitions:
+                found.append((qualname, name, kind, line, path))
+                defined[name] += 1
+            if REFS in provider.capabilities:
+                # Asked of the live provider, never of the entry: "this language has no
+                # reference tier" is what `ranked_by` reports, and it is a fact about the
+                # install rather than about the file.
+                saw_refs = True
+                for name, count in entry.calls:
+                    calls[name] += count
 
     entries = [
         Entry(qualname, kind, path, line, calls.get(name, 0), max(defined[name], 1))

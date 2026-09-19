@@ -1,6 +1,6 @@
 # benchmarks
 
-Four things are measured in this repository, and they answer different questions. Reaching
+Five things are measured in this repository, and they answer different questions. Reaching
 for the wrong one is how a session spends an evening proving something nobody asked.
 
 | | what it answers | needs | in `make check`? |
@@ -9,6 +9,7 @@ for the wrong one is how a session spends an evening proving something nobody as
 | `fieldrun/` | **flow**: what does an agent actually do with that page? | a database, a model, network | no |
 | `probes/page_cost.py` | **page cost**: what does one rendered page cost, and how much of it is itself repeated? | an indexed database | no |
 | `probes/api_latency.py` | **latency**: how long does the deployment take, verb by verb — and what do the web UI's own buttons cost? | a deployment | no |
+| `probes/code_lens.py` | **the local verbs**: what do `map` and `refs` cost against `grep`, and is the answer still a strict subset of it? | a checkout | no |
 
 None of them run in CI. Three need a database, two need the network, and one costs money.
 They are measurements you take deliberately, before and after a change to what a verb puts
@@ -55,6 +56,37 @@ post-fix:  4775 B  repeat=0.000  const=128 B  ['[authoritative]']
 
 Both of its thresholds were wrong on the first draft and that same page corrected them —
 the reasoning is in `echo()`, because a probe that silently under-reports is worse than none.
+
+## `probes/code_lens.py`: what the offline verbs cost, and whether they still tell the truth
+
+The only one here that needs no database and no deployment — just a checkout.
+
+```bash
+python benchmarks/probes/code_lens.py --root ~/src/transformers
+```
+
+It times `relore refs` and `relore map` against `git grep` and the naive `grep -rn` an agent
+reaches for by reflex, across four symbols chosen to span rare → ubiquitous, because the
+prefilter behind issue #83 is exactly as selective as the name is rare and a table with only
+a rare name in it overstates the change by twenty times.
+
+Speed is the easy half and on its own it is misleading, since **either speedup can be made
+arbitrarily fast by returning less**. So every run also checks that `relore`'s locations are
+a strict subset of `git grep`'s, and accounts for every line grep has that the lens does not:
+a file outside the walk, a longer identifier containing the substring, or prose. Prose is
+decided by `tokenize` — the stdlib's own lexer, deliberately a different implementation from
+the tree-sitter grammar under test. A per-line regex could not see that a docstring's fourth
+line is inside a docstring, and reported 867 of them as losses. On `transformers` @ `d9890f6`:
+
+```
+  use_kernels                           45 of 66     subset  (12 wider identifier, 9 prose, 0 unexplained)
+  forward                             8627 of 15355  subset  (4445 wider identifier, 2283 prose, 0 unexplained)
+  config                             77732 of 121697 subset  (35210 wider identifier, 8755 prose, 0 unexplained; 7 outside the walk)
+```
+
+Anything left unexplained, or any location the lens reports that grep cannot see, is printed
+in full and exits non-zero. It also asserts that cached and `RELORE_NO_CACHE` runs are
+byte-identical, which is issue #83's acceptance criterion in executable form.
 
 ## `probes/api_latency.py`: what the deployment costs
 
