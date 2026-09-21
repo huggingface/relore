@@ -19,7 +19,7 @@ from sqlalchemy import Engine
 
 from relore.ingest.index_thread import index_thread
 from relore.search import SearchQuery, expand, open_backend, search_expanded
-from relore.search.expansion import MAX_LEGS, MAX_PER_KIND, RRF_K
+from relore.search.expansion import MAX_LEGS, MAX_PER_KIND, RRF_K, rank_spec
 from relore.search.queries import MAX_HITS_PER_THREAD
 
 REPO = "owner/name"
@@ -160,6 +160,91 @@ def test_two_legs_asking_the_same_question_are_one_leg() -> None:
     assert len({(leg.query.text, leg.query.symbols) for leg in legs}) == len(legs)
 
 
+SENTINEL_SYMBOL = "ReloreScopeSentinelNoSuchSymbol"
+SENTINEL_FILE = "ReloreScopeSentinelNoSuchFile.py"
+SENTINEL_ERROR = "ReloreScopeSentinelNoSuchError"
+SENTINEL_TEST = "tests/sentinel.py::test_no_such_node"
+DERIVED_SYMBOL_TEXT = "Qwen3_5MoeExperts CheckpointError"
+NODE_ID_TEXT = "FAILED tests/models/test_foo.py::test_generate - boom"
+
+
+def _assert_legs_keep_explicit_filters(query: SearchQuery) -> None:
+    """Every expansion leg must keep the caller's *explicit* signal filters unchanged.
+
+    Derived evidence may still fill a field the caller left empty -- that is a new
+    question, not a dropped constraint. Same-kind values are ORed, so appending to a
+    field the caller set would widen it; replacing it is how #75 leaked hits the page
+    still claimed were filtered out.
+    """
+    for leg in expand(query):
+        if query.files:
+            assert leg.query.files == query.files
+        if query.symbols:
+            assert leg.query.symbols == query.symbols
+        if query.errors:
+            assert leg.query.errors == query.errors
+        if query.tests:
+            assert leg.query.tests == query.tests
+
+
+def test_a_derived_symbol_does_not_replace_an_explicit_symbol_filter() -> None:
+    """The field reproduction in huggingface/relore#75: expansion asked for the identifier
+    in the prose and dropped ``--symbol`` on that leg, while the response still listed it."""
+    query = SearchQuery(repos=(REPO,), text=DERIVED_SYMBOL_TEXT, symbols=(SENTINEL_SYMBOL,))
+
+    assert any(
+        leg.name == "symbol" for leg in expand(SearchQuery(repos=(REPO,), text=DERIVED_SYMBOL_TEXT))
+    )
+    _assert_legs_keep_explicit_filters(query)
+    for leg in expand(query):
+        assert SENTINEL_SYMBOL in leg.query.symbols
+        assert "Qwen3_5MoeExperts" not in leg.query.symbols
+
+
+def test_a_derived_file_does_not_replace_an_explicit_file_filter() -> None:
+    query = SearchQuery(repos=(REPO,), text=TRACEBACK, files=(SENTINEL_FILE,))
+
+    assert any(leg.name == "file" for leg in expand(SearchQuery(repos=(REPO,), text=TRACEBACK)))
+    _assert_legs_keep_explicit_filters(query)
+
+
+def test_a_derived_error_does_not_replace_an_explicit_error_filter() -> None:
+    query = SearchQuery(repos=(REPO,), text=TRACEBACK, errors=(SENTINEL_ERROR,))
+
+    assert any(leg.name == "error" for leg in expand(SearchQuery(repos=(REPO,), text=TRACEBACK)))
+    _assert_legs_keep_explicit_filters(query)
+
+
+def test_a_derived_test_id_does_not_replace_an_explicit_test_filter() -> None:
+    query = SearchQuery(repos=(REPO,), text=NODE_ID_TEXT, tests=(SENTINEL_TEST,))
+
+    assert any(leg.name == "test" for leg in expand(SearchQuery(repos=(REPO,), text=NODE_ID_TEXT)))
+    _assert_legs_keep_explicit_filters(query)
+
+
+def test_a_skipped_derived_leg_still_counts_toward_ranking() -> None:
+    """The caller's ``--symbol`` suppresses the derived symbol *leg*, not the evidence: the
+    identifier is still in the text, so it must still weigh in the score."""
+    query = SearchQuery(repos=(REPO,), text=DERIVED_SYMBOL_TEXT, symbols=(SENTINEL_SYMBOL,))
+
+    assert not any(
+        leg.name == "symbol" and leg.term == "Qwen3_5MoeExperts" for leg in expand(query)
+    )
+    spec = rank_spec(query, expand(query))
+
+    assert "Qwen3_5MoeExperts" in spec.symbols
+    assert SENTINEL_SYMBOL in spec.symbols
+
+
+def test_ranking_does_not_add_signals_for_a_kind_the_caller_left_open() -> None:
+    """Only a *skipped* leg is folded in separately; an unscoped kind still arrives through
+    its own leg, so nothing is counted twice."""
+    query = SearchQuery(repos=(REPO,), text=DERIVED_SYMBOL_TEXT)
+    spec = rank_spec(query, expand(query))
+
+    assert spec.symbols.count("Qwen3_5MoeExperts") == 1
+
+
 # -- the merged search, against a real index --------------------------------
 
 
@@ -259,3 +344,31 @@ def test_an_empty_repo_scope_stays_empty_through_expansion(engine: Engine) -> No
     """Section 11 fails closed: no repository in scope means nothing, never everything.
     Expansion runs several queries, so it is several chances to lose that."""
     assert search_expanded(open_backend(engine), SearchQuery(repos=(), text=TRACEBACK)) == []
+
+
+def test_expansion_does_not_admit_rows_outside_an_explicit_symbol_filter(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """huggingface/relore#75: the JSON still reported ``--symbol``, but a derived symbol
+    leg had already replaced it, so threads that never mentioned the sentinel came back.
+
+    Backticks put ``Qwen3_5MoeExperts`` into ``thread_symbols`` the way a real review
+    comment would, so the unconstrained expansion can find issue 47467. The constrained
+    call must not.
+    """
+    fake.add_issue(47467, body="`Qwen3_5MoeExperts` CheckpointError while loading experts")
+    fake.add_issue(2, body=f"`{SENTINEL_SYMBOL}` is the only thread this filter should keep")
+    _index(engine, fake, 47467, 2)
+    backend = open_backend(engine)
+    unconstrained = SearchQuery(repos=(REPO,), text=DERIVED_SYMBOL_TEXT)
+    constrained = SearchQuery(
+        repos=(REPO,),
+        text=DERIVED_SYMBOL_TEXT,
+        symbols=(SENTINEL_SYMBOL,),
+    )
+
+    unconstrained_numbers = {hit.number for hit in search_expanded(backend, unconstrained)}
+    constrained_numbers = {hit.number for hit in search_expanded(backend, constrained)}
+
+    assert 47467 in unconstrained_numbers
+    assert constrained_numbers == {2}

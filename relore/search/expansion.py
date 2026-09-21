@@ -97,19 +97,15 @@ class Leg:
     term: str = ""
 
 
-def expand(query: SearchQuery) -> tuple[Leg, ...]:
-    """Fan one request out into section 6's legs. Always at least the caller's own.
+def _derive(query: SearchQuery) -> list[tuple[str, str, dict[str, tuple[str, ...]]]]:
+    """What expansion pulled out of the caller's text: ``(leg name, term, filter override)``.
 
-    Extraction runs through :func:`relore.ingest.extract.extract_signals` -- the *same*
-    function that filled the tables these legs filter on. That pairing is not a
-    convenience: an error term matches only in section 5.3's normal form, so a leg that
-    normalized the pasted line differently would filter on a string the index does not
-    hold, and match nothing in a way indistinguishable from a quiet corpus.
+    Shared by :func:`expand`, which turns each into a leg, and :func:`rank_spec`, which
+    must still score against the ones expansion declined to run.
     """
-    legs = [Leg(name="text", query=query, term=query.text)]
     text = query.text.strip()
     if not text:
-        return tuple(legs)
+        return []
 
     signals = extract_signals([{"body_markdown": text, "body_text": text, "metadata": {}}])
     derived: list[tuple[str, str, dict[str, tuple[str, ...]]]] = []
@@ -121,10 +117,32 @@ def expand(query: SearchQuery) -> tuple[Leg, ...]:
         derived.append(("symbol", symbol, {"symbols": (symbol,)}))
     for path in _take(row["path"] for row in signals.files):
         derived.append(("file", path, {"files": (path,)}))
+    return derived
 
-    for name, term, override in derived:
+
+def expand(query: SearchQuery) -> tuple[Leg, ...]:
+    """Fan one request out into section 6's legs. Always at least the caller's own.
+
+    Extraction runs through :func:`relore.ingest.extract.extract_signals` -- the *same*
+    function that filled the tables these legs filter on. That pairing is not a
+    convenience: an error term matches only in section 5.3's normal form, so a leg that
+    normalized the pasted line differently would filter on a string the index does not
+    hold, and match nothing in a way indistinguishable from a quiet corpus.
+    """
+    legs = [Leg(name="text", query=query, term=query.text)]
+    if not query.text.strip():
+        return tuple(legs)
+
+    for name, term, override in _derive(query):
         # No free text on a signal leg. That is the fix, not an omission: the caller's
         # terms are what ANDed to nothing, and the overlap filter is thread-level.
+        field = next(iter(override))
+        if getattr(query, field):
+            # The caller already scoped this kind. ``replace(..., **override)`` would
+            # drop that constraint (huggingface/relore#75); appending would OR-widen
+            # it, because values inside one signal filter are disjoined. Skip the
+            # derived leg -- the text and filters-only legs still carry the evidence.
+            continue
         legs.append(Leg(name=name, query=replace(query, text="", **override), term=term))
 
     # The caller's own filters, asked without their text. Section 10.3's control: on the
@@ -206,6 +224,12 @@ def rank_spec(query: SearchQuery, legs: Sequence[Leg]) -> RankSpec:
     spec = RankSpec.of(query)
     for leg in legs:
         spec = spec.with_signals(RankSpec.of(leg.query))
+    for _name, _term, override in _derive(query):
+        # A kind the caller already scoped gets no leg of its own (see ``expand``), but the
+        # term is still in the lexical query, so it keeps its weight in the score. The
+        # filters are untouched: this widens the scoring question, not the scope.
+        if any(getattr(query, field) for field in override):
+            spec = spec.with_signals(replace(RankSpec(), **override))
     return spec
 
 
