@@ -185,6 +185,31 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--limit", type=int, default=60, help="candidates per slice (default: 60)")
 
     q = sub.add_parser(
+        "export-corpus",
+        help="section 13: the pre-cutoff documents, as JSONL, for the lexical/dense baselines",
+    )
+    q.add_argument(
+        "--repo", required=True, metavar="OWNER/NAME", help="repeatable", action="append"
+    )
+    q.add_argument(
+        "--before",
+        metavar="TIMESTAMP",
+        help="the cutoff, ISO and zoned (2026-03-01T00:00:00Z). Omit to export the whole "
+        "index, which is recorded as a corpus with no cutoff",
+    )
+    q.add_argument(
+        "--exclude-thread",
+        type=int,
+        action="append",
+        default=[],
+        dest="exclude_threads",
+        metavar="N",
+        help="withhold this thread from the export (repeatable), for a thread that "
+        "predates the cutoff and is still the answer",
+    )
+    q.add_argument("--out", required=True, metavar="PATH", help="JSONL to write")
+
+    q = sub.add_parser(
         "judge",
         help="section 10: fold the UI's relevance labels into the evaluation set",
     )
@@ -231,6 +256,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="score a set that is not frozen (section 10 says freeze it first)",
     )
+    q.add_argument(
+        "--before",
+        metavar="TIMESTAMP",
+        help="EVALUATION MODE: score the index as it stood at this instant. The report "
+        "says what the post-filter does not fix",
+    )
+    q.add_argument(
+        "--exclude-thread",
+        type=int,
+        action="append",
+        default=[],
+        dest="exclude_threads",
+        metavar="N",
+        help="EVALUATION MODE: withhold this thread from every query (repeatable)",
+    )
 
     q = sub.add_parser("status", help="live sync cursors, per repo and pass")
     q.add_argument("--json", action="store_true")
@@ -253,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         "sweep": _sweep,
         "authority": _authority,
         "mine": _mine,
+        "export-corpus": _export_corpus,
         "bench": _bench,
         "judge": _judge,
         "clone": _clone,
@@ -512,6 +553,39 @@ def _judge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_corpus(args: argparse.Namespace) -> int:
+    """Section 10's baseline corpus, as it stood at the cutoff. Local and read-only.
+
+    Selects with ``search.backends.base.corpus_scope``, the same predicate ``_filters``
+    applies, so a baseline cannot end up reading a different corpus than the index.
+    """
+    from pathlib import Path
+
+    from relore.bench.corpus import export
+
+    before = _instant(args.before, "--before") if args.before else None
+    stats = export(
+        _engine(),
+        Path(args.out),
+        repos=tuple(args.repo),
+        before=before,
+        exclude=tuple(args.exclude_threads),
+    )
+    window = before.isoformat() if before else "no cutoff"
+    print(f"{stats.documents} documents from {stats.threads} threads ({window})")
+    if stats.exclude:
+        print(f"withheld  {', '.join(f'#{n}' for n in stats.exclude)}")
+    print(f"sha256    {stats.digest}")
+    print(f"wrote     {stats.path}")
+    if before is None:
+        print(
+            "\nno --before: this is the whole index, a valid control but not a pre-cutoff "
+            "corpus. The header says so.",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _bench(args: argparse.Namespace) -> int:
     """Section 10. Two rules are enforced by the code rather than by the reader: one
     backend per report, and every baseline restricted to the corpus window."""
@@ -526,6 +600,21 @@ def _bench(args: argparse.Namespace) -> int:
         run_system,
         threads_by_path,
     )
+
+    wanted = tuple(args.systems) if args.systems else ("index", "github")
+    # Section 13. `github` and `grep` answer from outside this index and cannot honour a
+    # cutoff, so asking for both is refused rather than reported with a baseline that saw
+    # the future. Checked here because it is a question about the flags alone.
+    before = _instant(args.before, "--before") if args.before else None
+    exclude = tuple(args.exclude_threads)
+    if (before is not None or exclude) and ({"github", "grep"} & set(wanted)):
+        print(
+            "--before/--exclude-thread cannot be honoured by the `github` or `grep` "
+            "baselines: neither answers from this index, so neither can be held to its "
+            "cutoff. Score them in a separate, untimed run.",
+            file=sys.stderr,
+        )
+        return 2
 
     data = ds.load(Path(args.eval_set))
     if not data.frozen and not args.allow_unfrozen:
@@ -542,7 +631,6 @@ def _bench(args: argparse.Namespace) -> int:
         return 2
 
     repos = tuple(args.repo)
-    wanted = tuple(args.systems) if args.systems else ("index", "github")
     windows = {repo: data.since(repo) for repo in repos}
     # One floor for the whole run: a baseline restricted more narrowly than the index was
     # sampled is not the same comparison, and neither is one restricted less.
@@ -554,9 +642,15 @@ def _bench(args: argparse.Namespace) -> int:
     same_window = len(floors) <= 1 and not (floors and any(v is None for v in windows.values()))
 
     engine = _engine()
-    index = IndexSystem(engine, repos)
+    index = IndexSystem(engine, repos, before=before, exclude=exclude)
     report = Report(
-        backend=index.backend.info().as_dict(), corpus=[c.__dict__ for c in data.corpus]
+        backend=index.backend.info().as_dict(),
+        corpus=[c.__dict__ for c in data.corpus],
+        cutoff=(
+            {"before": before.isoformat() if before else None, "exclude": list(exclude)}
+            if (before is not None or exclude)
+            else None
+        ),
     )
 
     for name in wanted:
@@ -564,7 +658,11 @@ def _bench(args: argparse.Namespace) -> int:
             report.add(run_system(index, scoreable, window=window))
         elif name == "index+expand":
             report.add(
-                run_system(IndexSystem(engine, repos, expand=True), scoreable, window=window)
+                run_system(
+                    IndexSystem(engine, repos, expand=True, before=before, exclude=exclude),
+                    scoreable,
+                    window=window,
+                )
             )
         elif name == "github":
             with _client() as client:
@@ -592,6 +690,11 @@ def _bench(args: argparse.Namespace) -> int:
 
     print(f"backend  {report.backend['name']} / {report.backend['ranking']}")
     print(f"window   {window or 'none declared (full history)'}")
+    if report.cutoff is not None:
+        print(f"cutoff   {report.cutoff['before'] or 'none'}")
+        if exclude:
+            print(f"withheld {', '.join(f'#{n}' for n in exclude)}")
+        print(f"dropped  {index.post_filtered} hits post-filtered (signal-table leak)")
     counts = scoreable.counts()
     for kind in SLICE_NAMES:
         print(
@@ -617,6 +720,11 @@ def _bench(args: argparse.Namespace) -> int:
                 f"\nnote: {run.system} could not be restricted to the window; "
                 "section 10 says that is not a comparison"
             )
+    if report.cutoff is not None:
+        # Under the table: it is a caveat about the numbers above it, not a preamble.
+        from relore.bench.run import RANKING_CAVEAT
+
+        print(f"\nnote: {RANKING_CAVEAT}")
     return 0
 
 

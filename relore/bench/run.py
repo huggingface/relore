@@ -30,6 +30,7 @@ next to the recall rather than buried in it.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import subprocess
 import time
@@ -148,11 +149,22 @@ class BackendMismatch(RuntimeError):
     """Section 10: a recall figure measured on ``bm25`` describes a different engine."""
 
 
+#: Printed and carried in the JSON of every report produced under a cutoff, so it travels
+#: with the number rather than with a reader's memory.
+RANKING_CAVEAT = (
+    "ordering is still inflated: the thread_* signal tables carry no timestamp, so "
+    "`_overlap` scored rows created after the cutoff. Filtering is corrected by the "
+    "post-filter; ranking is not, until those tables carry a first_seen_at"
+)
+
+
 @dataclass
 class Report:
     backend: dict[str, Any]
     corpus: tuple[dict[str, Any], ...] = ()
     runs: list[Run] = field(default_factory=list)
+    #: ``{"before": …, "exclude": [...]}`` when this is a temporal run, else ``None``.
+    cutoff: dict[str, Any] | None = None
 
     def add(self, run: Run) -> None:
         if run.backend is not None and run.backend != self.backend:
@@ -182,13 +194,17 @@ class Report:
         return rows
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "backend": self.backend,
             "corpus": list(self.corpus),
             "windows": {run.system: run.window for run in self.runs},
             "window_applied": {run.system: run.window_applied for run in self.runs},
             "rows": self.table(),
         }
+        if self.cutoff is not None:
+            out["cutoff"] = self.cutoff
+            out["caveats"] = [RANKING_CAVEAT]
+        return out
 
 
 # -- the systems ------------------------------------------------------------
@@ -201,6 +217,10 @@ class IndexSystem:
     than a flag folded into this one: expansion has to earn its place against the same
     examples the unexpanded index was measured on, and a report that quietly changed what
     ``index`` means would make every earlier number incomparable.
+
+    ``before`` makes it a temporal run (section 13): the cutoff goes on every query and the
+    page then goes through :class:`~relore.bench.corpus.SignalPostFilter`. Unpinned, both
+    are the identity, so a timed and an untimed run come off the same code path.
     """
 
     def __init__(
@@ -210,11 +230,21 @@ class IndexSystem:
         *,
         kind_aware: bool = True,
         expand: bool = False,
+        before: dt.datetime | None = None,
+        exclude: Sequence[int] = (),
     ) -> None:
+        from relore.bench.corpus import SignalPostFilter
+
         self.backend = open_backend(engine)
         self.repos = tuple(repos)
         self.kind_aware = kind_aware
         self.expand = expand
+        self.before = before
+        self.exclude = tuple(exclude)
+        self.post = SignalPostFilter(engine, before)
+        #: How many hits the post-filter took off this run's pages -- reported rather than
+        #: inferred from a recall that moved. Zero means the leak did not touch the number.
+        self.post_filtered = 0
         self.name = "index+expand" if expand else "index"
 
     def search(self, example: Example) -> tuple[tuple[ThreadRef, ...], str]:
@@ -226,6 +256,8 @@ class IndexSystem:
             symbols=example.symbols,
             errors=example.errors,
             tests=example.tests,
+            before=self.before,
+            exclude=self.exclude,
             limit=MAX_HITS,
         )
         # `search_best`, not `search_expanded`: the system scored here has to be the system
@@ -234,7 +266,9 @@ class IndexSystem:
         # report `empty 0`), so it cannot move either score -- which is the point. What it
         # would catch is a future set that *does* contain an empty row.
         hits, _widened = search_best(self.backend, query, expand=self.expand)
-        return _dedupe((hit.repo, hit.number) for hit in hits), ""
+        kept = self.post.keep(hits, query)
+        self.post_filtered += len(hits) - len(kept)
+        return _dedupe((hit.repo, hit.number) for hit in kept), ""
 
 
 class GitHubSearchSystem:

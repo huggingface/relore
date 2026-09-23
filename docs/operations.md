@@ -148,3 +148,38 @@ relored bench --repo owner/name --set benchmarks/owner-name.jsonl \
 `--system grep --clone <checkout>` adds the second baseline; it reads a working tree, so
 point it at a detached worktree of `origin/main`, not a branch someone is working on.
 Results and caveats: [`ranking.md`](ranking.md).
+
+### A temporal run (§13)
+
+An evaluation that can retrieve the comment written *after* the bug was fixed measures
+nothing. `--before` scores the index as it stood at an instant; `--exclude-thread`
+withholds what a cutoff cannot express — a thread older than the cutoff that is still the
+answer:
+
+```bash
+relored bench --repo owner/name --set benchmarks/owner-name.jsonl \
+  --system index --before 2026-03-01T00:00:00Z --exclude-thread 41302
+```
+
+The timestamp must carry a zone; a naive one is refused at the flag. `github` and `grep`
+answer from outside this index and cannot be held to a cutoff, so asking for either
+alongside one is refused — score them in a separate, untimed run.
+
+The report prints how many hits the signal-table post-filter dropped, and what it does not
+fix: the five `thread_*` tables carry no timestamp, so §6's overlap terms scored rows
+written after the cutoff. **Filtering is corrected; ordering is not** until those tables
+carry a `first_seen_at`. That belongs beside any number such a run produced.
+
+### The corpus a baseline reads
+
+```bash
+relored export-corpus --repo owner/name --before 2026-03-01T00:00:00Z \
+  --exclude-thread 41302 --out corpus/task-41302.jsonl
+```
+
+JSONL, header first, one line per document. Local and read-only. It selects with the same
+predicate `search` applies, so a baseline built from this file reads the documents the
+index read rather than a near-miss of them. The header carries the cutoff, the withheld
+threads, a sha256 of the body (two exports of one corpus hash the same) and the limits the
+corpus still has. Omitting `--before` exports the whole index — a valid control, recorded
+as one.
