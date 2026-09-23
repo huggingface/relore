@@ -46,7 +46,7 @@ are fixed, each run checking the last one's from the outside.
 | **Comment-level results** | the matching document with its author, trust tier, age and URL — not a thread number to go re-read |
 | **Exact signals** | errors, files, symbols, test ids, shas, extracted at ingest and repeatable as filters |
 | **Trust tiers** | maintainer / contributor / bot, as a filter rather than a weight |
-| **Schema to join on** | "which threads touched this file", and a bug and its merged fix as one record — `search --file` under-returns the newest PRs touching a path until [#48](https://github.com/huggingface/relore/issues/48) lands |
+| **Schema to join on** | "which threads touched this file", and a bug and its merged fix as one record — open pull requests carry file lists too, and a `--file` page names the ones it could not test |
 | **The code, server-side** | `why PATH:LINE`, `grep`, `copies`, `symbol`, and `defs`/`refs` with `--repo`, against a working clone the daemon keeps |
 | **Throughput** | every query is a Postgres query and makes no GitHub request; ten agents in parallel cost the same as one |
 
