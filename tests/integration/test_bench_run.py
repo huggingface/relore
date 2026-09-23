@@ -3,6 +3,7 @@ reader does not have to (the build plan section 10)."""
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -328,3 +329,69 @@ def test_only_judged_examples_reach_the_score(engine: Engine, fake: FakeGitHub) 
 
     assert [r.example_id for r in run.results] == ["judged"]
     assert run.backend is not None
+
+
+# -- per-example windows ---------------------------------------------------
+
+EARLY = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+LATE = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+
+
+def _timed(**kwargs) -> Example:
+    kwargs.setdefault("id", "e")
+    kwargs.setdefault("kind", "failure")
+    kwargs.setdefault("query", "mapping backend")
+    return Example(**kwargs)
+
+
+def test_an_example_cutoff_applies_when_the_run_carries_none(engine: Engine) -> None:
+    system = br.IndexSystem(engine, (REPO,))
+    before, _ = system.window(_timed(before=EARLY.isoformat()))
+    assert before == EARLY
+
+
+def test_an_example_may_narrow_the_runs_cutoff(engine: Engine) -> None:
+    system = br.IndexSystem(engine, (REPO,), before=LATE)
+    before, _ = system.window(_timed(before=EARLY.isoformat()))
+    assert before == EARLY
+
+
+def test_an_example_cannot_widen_the_runs_cutoff(engine: Engine) -> None:
+    """The same rule, and the same argument, as the `AsOf` daemon pin: a bound the run was
+    started with is not something the data it reads may lift."""
+    system = br.IndexSystem(engine, (REPO,), before=EARLY)
+    before, _ = system.window(_timed(before=LATE.isoformat()))
+    assert before == EARLY
+
+
+def test_exclusions_are_the_union_of_the_run_and_the_example(engine: Engine) -> None:
+    """Union, not override: the run withholds what the run knows about and the example what
+    it was drawn from, and neither is entitled to readmit the other's."""
+    system = br.IndexSystem(engine, (REPO,), exclude=(7,))
+    _before, exclude = system.window(_timed(exclude=(9,)))
+    assert exclude == (7, 9)
+
+
+def test_an_example_without_a_window_still_gets_the_runs(engine: Engine) -> None:
+    system = br.IndexSystem(engine, (REPO,), before=LATE, exclude=(7,))
+    assert system.window(_timed()) == (LATE, (7,))
+
+
+def test_an_untimed_run_of_untimed_examples_is_unbounded(engine: Engine) -> None:
+    assert br.IndexSystem(engine, (REPO,)).window(_timed()) == (None, ())
+
+
+def test_a_per_example_cutoff_hides_a_later_thread(engine: Engine, fake: FakeGitHub) -> None:
+    """End to end: the same set, two examples, two windows -- one sees the thread and the
+    other does not, which a run-level flag cannot express."""
+    issue = fake.add_issue(1, body="an unrelated opening")
+    fake.add_comment(issue, 100, "the mapping backend is wrong", created_at="2026-03-01T00:00:00Z")
+    with fake.client() as client:
+        index_thread(engine, client, REPO, 1)
+
+    system = br.IndexSystem(engine, (REPO,))
+    seen, _ = system.search(_timed(before=LATE.isoformat()))
+    unseen, _ = system.search(_timed(before=EARLY.isoformat()))
+
+    assert seen == ((REPO, 1),)
+    assert unseen == ()

@@ -3,6 +3,7 @@ inspectable (the build plan section 10)."""
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,40 @@ def test_add_is_idempotent() -> None:
     data = ds.Dataset().add([_example()]).add([_example()])
 
     assert len(data.examples) == 1
+
+
+def test_an_example_may_carry_its_own_cutoff() -> None:
+    """A set whose examples come from different points in history needs one window per
+    example; a run-level flag holds exactly one."""
+    ex = _example(before="2026-03-01T00:00:00+00:00", exclude=(41310,))
+    assert ex.window() == dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc)
+    assert ex.exclude == (41310,)
+
+
+def test_a_trailing_z_is_a_cutoff_like_any_other() -> None:
+    assert _example(before="2026-03-01T00:00:00Z").window() == dt.datetime(
+        2026, 3, 1, tzinfo=dt.timezone.utc
+    )
+
+
+def test_a_naive_cutoff_is_refused() -> None:
+    """A cutoff with no zone is a different instant depending on who runs the set, which is
+    the one thing a frozen set exists to prevent. `SearchQuery` refuses one too."""
+    with pytest.raises(ValueError, match="timezone-aware instant"):
+        _example(before="2026-03-01T00:00:00")
+
+
+def test_an_unparseable_cutoff_is_refused() -> None:
+    with pytest.raises(ValueError, match="timezone-aware instant"):
+        _example(before="march the first")
+
+
+def test_no_cutoff_leaves_the_window_to_the_run() -> None:
+    assert _example().window() is None
+
+
+def test_the_window_survives_the_file(tmp_path: Path) -> None:
+    ex = _example(before="2026-03-01T00:00:00+00:00", exclude=(7, 9))
+    path = tmp_path / "set.jsonl"
+    ds.save(ds.Dataset(examples=(ex,)), path)
+    assert ds.load(path).examples == (ex,)

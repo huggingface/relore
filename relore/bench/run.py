@@ -233,21 +233,34 @@ class IndexSystem:
         before: dt.datetime | None = None,
         exclude: Sequence[int] = (),
     ) -> None:
-        from relore.bench.corpus import SignalPostFilter
-
         self.backend = open_backend(engine)
         self.repos = tuple(repos)
         self.kind_aware = kind_aware
         self.expand = expand
         self.before = before
         self.exclude = tuple(exclude)
-        self.post = SignalPostFilter(engine, before)
+        self.engine = engine
         #: How many hits the post-filter took off this run's pages -- reported rather than
         #: inferred from a recall that moved. Zero means the leak did not touch the number.
         self.post_filtered = 0
         self.name = "index+expand" if expand else "index"
 
+    def window(self, example: Example) -> tuple[dt.datetime | None, tuple[int, ...]]:
+        """This example's cutoff and withheld threads, narrowed against the run's.
+
+        An example may narrow the run's window and can never widen it -- the same rule, and
+        the same argument, as the ``AsOf`` daemon pin: a bound the run was started with is
+        not something the data it reads may lift. So the cutoff is the earlier of the two
+        and the exclusions are the union.
+        """
+        mine = example.window()
+        before = min(filter(None, (self.before, mine)), default=None)
+        return before, tuple(sorted(set(self.exclude) | set(example.exclude)))
+
     def search(self, example: Example) -> tuple[tuple[ThreadRef, ...], str]:
+        from relore.bench.corpus import SignalPostFilter
+
+        before, exclude = self.window(example)
         query = SearchQuery(
             repos=self.repos,
             text=example.query,
@@ -256,8 +269,8 @@ class IndexSystem:
             symbols=example.symbols,
             errors=example.errors,
             tests=example.tests,
-            before=self.before,
-            exclude=self.exclude,
+            before=before,
+            exclude=exclude,
             limit=MAX_HITS,
         )
         # `search_best`, not `search_expanded`: the system scored here has to be the system
@@ -266,7 +279,10 @@ class IndexSystem:
         # report `empty 0`), so it cannot move either score -- which is the point. What it
         # would catch is a future set that *does* contain an empty row.
         hits, _widened = search_best(self.backend, query, expand=self.expand)
-        kept = self.post.keep(hits, query)
+        # The post-filter is pinned per example, not per run: it re-derives each hit
+        # thread's signals as of *this* cutoff, so a run-level one would size the leak
+        # against the wrong instant for every example that carries its own.
+        kept = SignalPostFilter(self.engine, before).keep(hits, query) if before else hits
         self.post_filtered += len(hits) - len(kept)
         return _dedupe((hit.repo, hit.number) for hit in kept), ""
 
