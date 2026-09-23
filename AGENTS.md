@@ -316,15 +316,18 @@ invariant 1 puts it in the client's import graph.
 
 Three rules follow, and forgetting any of them is felt by somebody else:
 
-1. **Bump it in the same commit as any change a client can see** — a wire payload, a
-   renderer, a CLI flag. The minor is the completed milestone; the patch is releases
-   within it.
-2. **The bump and the deploy are one operation.** A bump on `main` that is not shipped
-   breaks every client installed after the merge; they are told the deployment is behind,
-   which is true and is nobody's intent.
-3. **Update the samples that print it in the same commit** — `docs/cli.md` and
+1. **A pull request does not bump the version.** Leave `__version__` alone, however
+   client-visible the change is. A bump per PR makes the number a changelog — two merged
+   the same afternoon either collide or land two releases nobody shipped — and it is the
+   one conflict every branch gets, on the one line where resolving it wrongly is invisible.
+   Say what a client can see in the PR description; the release decides what to call it.
+2. **The bump and the deploy are one operation**, and both belong to the release, not to
+   the change. A bump on `main` that is not shipped breaks every client installed after the
+   merge; they are told the deployment is behind, which is true and is nobody's intent.
+3. **A bump updates the samples that print it, in the same commit** — `docs/cli.md` and
    `docs/how-search-works.md` each show a `relore status` page. Both had drifted by four
-   releases (#39); `test_prose_surfaces.py` now fails the bump until they follow.
+   releases (#39); `test_prose_surfaces.py` fails the bump until they follow. This fires at
+   release time, which is now the only time the number moves.
 
 → `tests/unit/test_wire.py`, `tests/integration/test_api.py` ("the version handshake"),
 `tests/integration/test_cli_client.py`. A test client that talks to `/api/v1` sends the
