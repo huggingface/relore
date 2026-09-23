@@ -61,6 +61,23 @@ class SearchRequest(BaseModel):
     tests: list[str] = []
     labels: list[str] = []
     since: dt.datetime | None = None
+    before: dt.datetime | None = Field(
+        default=None,
+        description=(
+            "only documents written before this instant. The complement of `since`, and a "
+            "different question: `since` asks what is recent, this reconstructs the index "
+            "as it stood at a past moment. A document whose creation date is unknown is "
+            "excluded rather than admitted"
+        ),
+    )
+    exclude: list[int] = Field(
+        default=[],
+        description=(
+            "thread numbers this call may not reach. A cutoff cannot express these: a "
+            "temporal benchmark's own task issue and the pull request that fixed it are "
+            "older than the cutoff and are still the answer"
+        ),
+    )
     limit: int = MAX_HITS
     sort: str = Field(
         default="relevance",

@@ -43,7 +43,7 @@ first; this page is the long form.
 
 | | |
 | --- | --- |
-| `search QUERY` | the index. Filters: `--error`, `--test`, `--file`, `--symbol`, `--label` (repeatable, ANDed with the text); `--kind failure\|precedent\|rationale`; `--trust authoritative\|machine`; `--repo`, `--since`, `--limit`, `--sort newest`, `--no-expand` |
+| `search QUERY` | the index. Filters: `--error`, `--test`, `--file`, `--symbol`, `--label` (repeatable, ANDed with the text); `--kind failure\|precedent\|rationale`; `--trust authoritative\|machine`; `--repo`, `--since`, `--before`, `--exclude`, `--limit`, `--sort newest`, `--no-expand` |
 | `thread N` | one thread. `--focus "…"` orders its comments and never empties them; `--full` serves the opening post whole, reproduction included |
 | `inflight N` | is somebody already fixing this? Threads claiming to close `N`, open ones first |
 | `why PATH:LINE` | the pull request that last changed this line, and the review comments anchored near it |
@@ -765,6 +765,52 @@ unaffected: the conversation index never depends on a checkout. `relored clone -
 OWNER/NAME`, run where `relored serve` runs, creates one.
 
 ---
+
+## "What did the project know, before it knew the answer?"
+
+`--since` narrows to recent discussion. `--before` is the other question: the index as it
+stood at a past instant, with everything written after it withheld.
+
+```
+$ ghlore search "rope scaling" --before 2026-03-01T00:00:00Z
+```
+
+It is a predicate in the query, not an instruction — the server drops the rows, so nothing
+after the cutoff is read and then disregarded. A document whose creation date the index does
+not know is **excluded** rather than admitted: an unknown date cannot be shown to predate
+the cutoff. `--since` and `--before` compose into a window, and a window with nothing in it
+(`--since` at or after `--before`) is refused rather than answered with an empty page.
+
+`thread`, `why` and `inflight` take the same cutoff. A thread opened after it is **404**,
+not an empty page — "this did not exist yet" and "this exists and said nothing" are
+different answers. `inflight` in particular: asked for an issue number it normally names
+the pull request that closed it, which under a cutoff is the answer.
+
+`--exclude N` withholds one thread by number, repeatably. It is the part a cutoff cannot
+express: the thread a question was drawn from is *older* than the cutoff and is still the
+answer.
+
+```
+$ ghlore search "rope scaling" --before 2026-03-01T00:00:00Z --exclude 41302 --exclude 41577
+```
+
+### Pinning a whole daemon
+
+A cutoff a caller has to pass is a cutoff a caller can omit, which is no use for an
+evaluation where the caller is an agent with a shell. So the pin belongs to the process:
+
+```
+$ ghlored serve --as-of 2026-03-01T00:00:00Z --exclude-thread 41302
+```
+
+Every read is then bounded, a request may only narrow it further, and `ghlore status`
+reports the pin. This is an evaluation mode — a pinned daemon serving real callers is an
+index quietly missing its last six months, which answers every question plausibly.
+
+One thing it does *not* freeze yet: the signal tables (`--file`, `--symbol`, `--error`,
+`--test`) are per *thread* and carry no date, so a path first named after the cutoff still
+matches that thread's older documents. The documents returned are genuinely pre-cutoff; the
+selection is not.
 
 ## Empty results that are not faults
 

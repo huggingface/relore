@@ -7,6 +7,7 @@ guardrails on ``serve`` itself.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 import shutil
@@ -19,7 +20,7 @@ from sqlalchemy import Engine
 
 from relore import __version__
 from relore.api import ui
-from relore.api.server import build_app, serve
+from relore.api.server import AsOf, build_app, serve
 from relore.api.tokens import LABEL_SCOPE, Authenticator, Token
 from relore.ingest.index_thread import index_thread
 from relore.render import render_search
@@ -28,6 +29,10 @@ from relore.security.untrusted import BEGIN, END, NOTICE
 from relore.wire import CLIENT_HEADER, SERVER_HEADER, UPGRADE_REQUIRED
 
 REPO = "owner/name"
+
+
+def _instant(raw: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
 
 
 def _serving(app) -> TestClient:
@@ -295,6 +300,93 @@ def test_the_response_names_the_floor_it_applied(client: TestClient, engine: Eng
 
 def test_an_unknown_trust_tier_is_a_400_not_a_500(client: TestClient) -> None:
     response = client.post("/api/v1/search", json={"query": "x", "trust": "trustworthy"})
+    assert response.status_code == 400
+
+
+def test_the_cutoff_is_applied_by_the_server_not_asked_of_the_caller(
+    client: TestClient, engine: Engine, fake
+) -> None:
+    """A temporal benchmark's cutoff has to be a predicate in the query, not an instruction
+    to ignore newer hits: an agent told to disregard what it has already read has read it.
+    So the endpoint filters, and the echoed query says which instant it filtered at."""
+    pr = fake.add_pr(1, body="the cutoff marker as first written")
+    fake.add_comment(pr, 100, "the cutoff marker, revisited", created_at="2026-06-01T00:00:00Z")
+    _index(engine, fake, 1)
+
+    payload = _search(client, query="cutoff marker", before="2026-03-01T00:00:00Z")
+
+    assert [hit["source_type"] for hit in payload["hits"]] == ["body"]
+    assert payload["query"]["before"] == "2026-03-01T00:00:00+00:00"
+
+
+def test_a_pinned_daemon_bounds_a_request_that_asks_for_no_cutoff(engine: Engine, fake) -> None:
+    """The point of the pin. A cutoff the caller has to pass is one the caller can omit,
+    and an agent with a shell omitting it turns the treatment condition into a system that
+    can read the answer."""
+    pr = fake.add_pr(1, body="the pinned marker as first written")
+    fake.add_comment(pr, 100, "the pinned marker, revisited", created_at="2026-06-01T00:00:00Z")
+    _index(engine, fake, 1)
+    client = _serving(build_app(engine, as_of=AsOf(before=_instant("2026-03-01T00:00:00Z"))))
+
+    payload = _search(client, query="pinned marker")
+
+    assert [hit["source_type"] for hit in payload["hits"]] == ["body"]
+
+
+def test_a_request_may_narrow_the_pin_and_can_never_widen_it(engine: Engine, fake) -> None:
+    """Section 11's repository scope, applied to time: the request subtracts or it does
+    nothing."""
+    pr = fake.add_pr(1, body="the pinned marker as first written")
+    fake.add_comment(pr, 100, "the pinned marker, revisited", created_at="2026-06-01T00:00:00Z")
+    _index(engine, fake, 1)
+    client = _serving(build_app(engine, as_of=AsOf(before=_instant("2026-03-01T00:00:00Z"))))
+
+    widened = _search(client, query="pinned marker", before="2027-01-01T00:00:00Z")
+    narrowed = _search(client, query="pinned marker", before="2024-01-01T00:00:00Z")
+
+    assert widened["query"]["before"] == "2026-03-01T00:00:00+00:00"
+    assert [hit["source_type"] for hit in widened["hits"]] == ["body"]
+    assert narrowed["query"]["before"] == "2024-01-01T00:00:00+00:00"
+    assert narrowed["hits"] == []
+
+
+def test_a_pinned_exclusion_holds_against_a_request_that_omits_it(engine: Engine, fake) -> None:
+    fake.add_pr(1, body="the task's own thread")
+    _index(engine, fake, 1)
+    client = _serving(build_app(engine, as_of=AsOf(exclude=(1,))))
+
+    assert _search(client, query="task own thread")["hits"] == []
+    assert client.get("/api/v1/thread/1").status_code == 404
+
+
+def test_status_says_when_the_daemon_is_pinned(engine: Engine) -> None:
+    """An operator cannot tell a pinned daemon from a live one by reading a result, and a
+    benchmark run that quietly lost its pin looks like a good result."""
+    pinned = _serving(build_app(engine, as_of=AsOf(before=_instant("2026-03-01T00:00:00Z"))))
+    live = _serving(build_app(engine))
+
+    assert pinned.get("/api/v1/status").json()["as_of"] == {
+        "before": "2026-03-01T00:00:00+00:00",
+        "exclude": [],
+    }
+    assert "as_of" not in live.get("/api/v1/status").json()
+
+
+def test_inflight_under_a_pin_does_not_name_the_thread_that_fixed_it(engine: Engine, fake) -> None:
+    fake.add_issue(1, title="crashes for any rotary_pct != 1.0")
+    fake.add_pr(2, title="fix: respect partial_rotary_factor", body="Fixes #1")
+    _index(engine, fake, 1, 2)
+    client = _serving(build_app(engine, as_of=AsOf(exclude=(2,))))
+
+    assert client.get("/api/v1/inflight/1").json()["claims"] == []
+    assert _serving(build_app(engine)).get("/api/v1/inflight/1").json()["claims"] != []
+
+
+def test_an_empty_window_is_a_400_not_an_empty_page(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/search",
+        json={"query": "x", "since": "2026-06-01T00:00:00Z", "before": "2026-01-01T00:00:00Z"},
+    )
     assert response.status_code == 400
 
 

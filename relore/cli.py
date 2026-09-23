@@ -195,6 +195,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="raise the floor to 'authoritative', or 'machine' to ask what our own bots said",
     )
     s.add_argument("--since", help="ISO timestamp; only documents written after it")
+    s.add_argument(
+        "--before",
+        help="ISO timestamp; only documents written before it -- the index as it stood then",
+    )
+    s.add_argument(
+        "--exclude",
+        type=int,
+        action="append",
+        default=[],
+        metavar="N",
+        help="a thread number this search may not return (repeatable)",
+    )
     # Narrows the token's scope, never widens it -- see the server. Repeatable, so it
     # reads like the other filters even though one name is the usual case.
     s.add_argument(
@@ -426,6 +438,8 @@ def _search(args: argparse.Namespace) -> int:
             "labels": args.label,
             "repos": _repos(args),
             "since": args.since,
+            "before": args.before,
+            "exclude": args.exclude,
             "limit": args.limit,
             "compact": _compact(args),
             "sort": args.sort,

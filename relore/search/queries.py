@@ -162,6 +162,19 @@ class SearchQuery:
     tests: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
     since: dt.datetime | None = None
+    #: An upper bound on document age: only what was written *before* this instant is
+    #: eligible. ``since`` narrows a search to recent discussion; this reconstructs the
+    #: index as it stood at a past moment, which is a different question and the one a
+    #: temporal benchmark asks -- an evaluation that can retrieve the answer written after
+    #: the task measures nothing. Applied in the query layer beside the repo scope and the
+    #: trust floor (``backends/base._filters``) so a new endpoint cannot forget it, and
+    #: carried by every expansion leg because a leg is a ``replace()`` of this object.
+    before: dt.datetime | None = None
+    #: Thread numbers this call may not reach, whatever else matches. A temporal benchmark
+    #: needs it for the one thing a cutoff cannot express: the task's own issue and the
+    #: pull request that fixed it are *older* than the cutoff and are still the answer, so
+    #: the corpus has to be able to withhold a named thread rather than an era.
+    exclude: tuple[int, ...] = ()
     limit: int = MAX_HITS
     compact: bool = False
     sort: str = "relevance"
@@ -187,6 +200,18 @@ class SearchQuery:
             raise QueryError(f"unknown trust tier {self.trust!r}")
         if self.since is not None and self.since.tzinfo is None:
             raise QueryError("since must be timezone-aware")
+        if self.before is not None and self.before.tzinfo is None:
+            raise QueryError("before must be timezone-aware")
+        # An empty window is a caller error, not an empty result: `since > before` asks for
+        # documents written after one instant and before an earlier one, which no corpus
+        # can satisfy. Answering it with silence is indistinguishable from a quiet index,
+        # and a benchmark that misconfigures its cutoff would read that silence as a
+        # baseline scoring zero.
+        if self.since is not None and self.before is not None and self.since >= self.before:
+            raise QueryError(
+                f"empty window: since {self.since.isoformat()} is not before "
+                f"before {self.before.isoformat()}"
+            )
         if self.sort not in SORTS:
             raise QueryError(f"unknown sort {self.sort!r}; one of {list(SORTS)}")
         if self.match not in MATCHES:
