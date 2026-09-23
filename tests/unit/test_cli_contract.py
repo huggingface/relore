@@ -436,3 +436,53 @@ def test_json_is_not_trimmed_by_the_pipe_default(monkeypatch) -> None:
     assert (
         cli._compact(cli.build_parser().parse_args(["--json", "--compact", "search", "x"])) is True
     )
+
+
+# -- the temporal verbs (section 13) ---------------------------------------
+
+
+@pytest.mark.parametrize("verb", ["export-corpus", "bench", "mine", "judge", "serve"])
+def test_every_daemon_verb_is_registered(verb: str) -> None:
+    actions = [a for a in daemon.build_parser()._actions if hasattr(a, "choices") and a.choices]
+    assert any(verb in a.choices for a in actions), f"{verb} is documented but not in the parser"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["export-corpus", "--repo", "owner/name", "--before", "2026-03-01", "--out", "c.jsonl"],
+        ["bench", "--repo", "owner/name", "--set", "s.jsonl", "--before", "2026-03-01"],
+        ["serve", "--as-of", "2026-03-01"],
+    ],
+)
+def test_a_naive_cutoff_is_refused_before_anything_runs(argv, monkeypatch, tmp_path) -> None:
+    """A naive cutoff parses, filters, and is wrong by the reader's offset from UTC --
+    which on a leakage boundary is a document either side of it. Refused at the flag."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(daemon.DB_URL_ENV, "sqlite://")
+
+    with pytest.raises(SystemExit) as exc:
+        daemon.main(argv)
+
+    assert "no timezone" in str(exc.value)
+
+
+def test_a_cutoff_run_refuses_the_baselines_that_cannot_honour_it(capsys, tmp_path) -> None:
+    """Their numbers beside a cutoff-restricted `index` would be a bounded system against
+    two unbounded ones, with the gap read as a result."""
+    code = daemon.main(
+        [
+            "bench",
+            "--repo",
+            "owner/name",
+            "--set",
+            str(tmp_path / "never-read.jsonl"),
+            "--before",
+            "2026-03-01T00:00:00Z",
+            "--system",
+            "github",
+        ]
+    )
+
+    assert code == 2
+    assert "cannot be honoured" in capsys.readouterr().err

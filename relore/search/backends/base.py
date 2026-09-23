@@ -98,7 +98,7 @@ class _Comments(NamedTuple):
     comment_status: str = ""
 
 
-def _written_before(before: dt.datetime | None) -> tuple[Any, ...]:
+def written_before(before: dt.datetime | None) -> tuple[Any, ...]:
     """Section 13's cutoff over ``documents``, as predicates to splat into a ``where``.
 
     Fails closed twice over. A NULL ``github_created_at`` compares NULL rather than TRUE,
@@ -113,6 +113,30 @@ def _written_before(before: dt.datetime | None) -> tuple[Any, ...]:
 def _opened_before(before: dt.datetime | None) -> tuple[Any, ...]:
     """The same, over ``threads``. A thread opened at or after the cutoff did not exist."""
     return () if before is None else (s.threads.c.created_at < before,)
+
+
+def corpus_scope(
+    repos: Sequence[str],
+    before: dt.datetime | None = None,
+    exclude: Sequence[int] = (),
+) -> tuple[Any, ...]:
+    """Which documents exist *at all* for this caller, over ``documents JOIN threads``.
+
+    Everything in :meth:`SearchBackend._filters` that is not a question about the
+    particular query: section 11's repository scope, section 13's cutoff, and the threads a
+    benchmark withholds by number.
+
+    Public because :mod:`relore.bench.corpus` exports section 10's baseline corpus with it.
+    Two predicates meant to agree drift the moment one is edited, and a baseline reading a
+    different corpus than the index is not a baseline.
+    """
+    where: list[Any] = [s.threads.c.repo.in_(tuple(repos)), *written_before(before)]
+    # The one thing a cutoff cannot express: the task's own issue and the pull request
+    # that fixed it are *older* than `T` and are still the answer, so the corpus has to be
+    # able to withhold a named thread rather than an era (section 14B).
+    if exclude:
+        where.append(s.threads.c.github_number.notin_(tuple(exclude)))
+    return tuple(where)
 
 
 def _reachable(
@@ -472,24 +496,16 @@ class SearchBackend(ABC):
         Repo scoping is first and unconditional: section 11 applies it here, in the query
         layer, rather than in a handler, so that adding an endpoint cannot drop it.
         """
+        # Scope, cutoff and withheld threads come from `corpus_scope`, which `bench` also
+        # exports with. The cutoff fails closed inside it: a NULL `github_created_at`
+        # compares NULL rather than TRUE, so an undated document is excluded rather than
+        # admitted -- the opposite of `_decay`, where an unknown date must not cost rank.
         where: list[Any] = [
-            s.threads.c.repo.in_(query.repos),
+            *corpus_scope(query.repos, query.before, query.exclude),
             self._trust_filter(query),
         ]
         if query.since is not None:
             where.append(s.documents.c.github_created_at >= query.since)
-        # Section 13's temporal cutoff, and it fails closed on its own. A NULL
-        # `github_created_at` compares NULL rather than TRUE, so a document whose date this
-        # index does not know is *excluded* from an `as_of` query instead of admitted to
-        # it. That is the right way round: an unknown date cannot be shown to predate the
-        # cutoff, and a leakage rule that admits what it cannot verify is not a rule. It is
-        # the opposite of `_decay`'s treatment of the same NULL -- there an unknown date is
-        # missing evidence and must not cost rank; here it is missing evidence and must not
-        # buy admission.
-        if query.before is not None:
-            where.append(s.documents.c.github_created_at < query.before)
-        if query.exclude:
-            where.append(s.threads.c.github_number.notin_(query.exclude))
         if query.labels:
             where.append(self._thread_has(s.thread_labels, s.thread_labels.c.label, query.labels))
         # The four signal filters below read tables that milestone 3's extraction pass
@@ -950,7 +966,7 @@ class SearchBackend(ABC):
                 .where(
                     s.documents.c.thread_id == thread_id,
                     s.documents.c.source_type == "body",
-                    *_written_before(before),
+                    *written_before(before),
                 )
                 .order_by(s.documents.c.chunk_index.asc())
             )
@@ -1001,7 +1017,7 @@ class SearchBackend(ABC):
                 # derived select -- the machine-tier count below included -- is bounded by
                 # construction. A count that saw past the cutoff would announce comments
                 # the page cannot serve.
-                *_written_before(before),
+                *written_before(before),
             )
 
         base = documents(admissible_trust(None))
@@ -1382,7 +1398,7 @@ def _argument(
         .where(
             s.threads.c.github_number == number,
             s.documents.c.source_type.in_(("review_comment", "review")),
-            *_written_before(before),
+            *written_before(before),
         )
     ).all()
 
