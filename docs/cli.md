@@ -772,7 +772,7 @@ OWNER/NAME`, run where `relored serve` runs, creates one.
 stood at a past instant, with everything written after it withheld.
 
 ```
-$ ghlore search "rope scaling" --before 2026-03-01T00:00:00Z
+$ relore search "rope scaling" --before 2026-03-01T00:00:00Z
 ```
 
 It is a predicate in the query, not an instruction — the server drops the rows, so nothing
@@ -791,7 +791,7 @@ express: the thread a question was drawn from is *older* than the cutoff and is 
 answer.
 
 ```
-$ ghlore search "rope scaling" --before 2026-03-01T00:00:00Z --exclude 41302 --exclude 41577
+$ relore search "rope scaling" --before 2026-03-01T00:00:00Z --exclude 41302 --exclude 41577
 ```
 
 ### Pinning a whole daemon
@@ -800,10 +800,10 @@ A cutoff a caller has to pass is a cutoff a caller can omit, which is no use for
 evaluation where the caller is an agent with a shell. So the pin belongs to the process:
 
 ```
-$ ghlored serve --as-of 2026-03-01T00:00:00Z --exclude-thread 41302
+$ relored serve --as-of 2026-03-01T00:00:00Z --exclude-thread 41302
 ```
 
-Every read is then bounded, a request may only narrow it further, and `ghlore status`
+Every read is then bounded, a request may only narrow it further, and `relore status`
 reports the pin. This is an evaluation mode — a pinned daemon serving real callers is an
 index quietly missing its last six months, which answers every question plausibly.
 

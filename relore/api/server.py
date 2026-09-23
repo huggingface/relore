@@ -76,7 +76,7 @@ class AsOf:
     **Why this is not only a request parameter.** A benchmark condition gives the agent a
     shell and an HTTP API; a cutoff it has to pass is a cutoff it can omit, and one
     forgotten flag silently turns the treatment condition into a system that can read the
-    answer. So the honest place for it is the process: `ghlored serve --as-of T` serves an
+    answer. So the honest place for it is the process: `relored serve --as-of T` serves an
     index that *has* no later documents to give, and the agent's own query cannot widen it.
 
     That is the same shape as section 11's repository scope, for the same reason -- a
