@@ -126,8 +126,8 @@ A refusal is legible; a short answer is not.
 The price is that `relore/__init__.py`'s `__version__` is a contract rather than a label:
 
 * it is the **only** place the version is written (`pyproject.toml` reads it from there);
-* **bump it in the same commit** as any change a client can see — a wire payload, a
-  renderer, a CLI flag; and
+* **a pull request leaves it alone**, however client-visible the change — the bump belongs
+  to the release, not to the change that prompted it; and
 * **bump and deploy are one operation.** A bump merged to `main` and not shipped breaks
   every client installed after the merge, and they will be told the deployment is behind.
 

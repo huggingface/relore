@@ -5,8 +5,11 @@
 #: payload and the wire handshake (:mod:`relore.wire`) can never disagree.
 #:
 #: The minor is the milestone the build plan considers complete; the patch is every
-#: release inside it. **Bump it in the same commit as any change a client can see** --
-#: a wire payload, a renderer, a CLI flag -- because the client and the daemon must run
-#: the same version to talk at all (:mod:`relore.wire`), which makes this string the
-#: compatibility contract rather than a label.
+#: release inside it. It matters because the client and the daemon must run the same
+#: version to talk at all (:mod:`relore.wire`), which makes this string the compatibility
+#: contract rather than a label.
+#:
+#: **A pull request does not touch it.** The bump belongs to the release, which is the
+#: only moment anyone can say what shipped -- a bump per change makes this line the one
+#: conflict every branch gets, on the one line where resolving it wrongly is invisible.
 __version__ = "0.3.17"
