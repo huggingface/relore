@@ -8,6 +8,7 @@ instead of another day of API budget. ``poll`` does both for the few threads tha
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import logging
 import os
@@ -148,6 +149,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--trust-network",
         action="store_true",
         help="bind wider with no tokens, because the only route here is a private network",
+    )
+    # A cutoff a caller has to pass is a cutoff a caller can omit. For a temporal
+    # evaluation the pin belongs to the process, so the agent's own query cannot widen it.
+    q.add_argument(
+        "--as-of",
+        help=(
+            "EVALUATION MODE: serve the index as it stood at this ISO timestamp. Every "
+            "read is bounded, and a request may only narrow it further"
+        ),
+    )
+    q.add_argument(
+        "--exclude-thread",
+        type=int,
+        action="append",
+        default=[],
+        dest="exclude_threads",
+        metavar="N",
+        help="EVALUATION MODE: withhold this thread from every read (repeatable)",
     )
 
     q = sub.add_parser(
@@ -658,7 +677,7 @@ def _clone(args: argparse.Namespace) -> int:
 def _serve(args: argparse.Namespace) -> int:
     """Needs the ``[server]`` extra. Imported here so every other verb runs without it."""
     try:
-        from relore.api.server import serve
+        from relore.api.server import AsOf, serve
     except ImportError:
         raise SystemExit(
             "relored serve needs the server extra.\n"
@@ -668,13 +687,33 @@ def _serve(args: argparse.Namespace) -> int:
     url = os.environ.get(DB_URL_ENV)
     if not url:
         raise SystemExit(f"set {DB_URL_ENV}")
+    before = None
+    if args.as_of:
+        before = _instant(args.as_of, "--as-of")
     return serve(
         url,
         host=args.host,
         port=args.port,
         allow_sqlite=args.allow_sqlite,
         trust_network=args.trust_network,
+        as_of=AsOf(before=before, exclude=tuple(args.exclude_threads)),
     )
+
+
+def _instant(raw: str, flag: str) -> dt.datetime:
+    """An ISO timestamp, and it must carry a zone.
+
+    A naive cutoff is the bug that does not look like one: it parses, it filters, and it
+    is wrong by however many hours the reader's machine is from UTC -- which on a
+    leakage boundary is a document either side of it.
+    """
+    try:
+        moment = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise SystemExit(f"{flag}: {raw!r} is not an ISO timestamp") from None
+    if moment.tzinfo is None:
+        raise SystemExit(f"{flag}: {raw!r} has no timezone; write it as ...Z or ...+00:00")
+    return moment
 
 
 def _sample(args: argparse.Namespace) -> int:

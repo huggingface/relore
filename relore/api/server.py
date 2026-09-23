@@ -19,16 +19,18 @@ concrete names (:mod:`relore.api.tokens`), and every query carries them.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
 import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import Engine, select
 
@@ -67,6 +69,47 @@ LABELS_ENV = "RELORE_LABELS_PATH"
 VERDICTS = ("relevant", "not_relevant", "decisive")
 
 
+@dataclass(frozen=True)
+class AsOf:
+    """A cutoff pinned to the whole daemon, for a temporal evaluation.
+
+    **Why this is not only a request parameter.** A benchmark condition gives the agent a
+    shell and an HTTP API; a cutoff it has to pass is a cutoff it can omit, and one
+    forgotten flag silently turns the treatment condition into a system that can read the
+    answer. So the honest place for it is the process: `relored serve --as-of T` serves an
+    index that *has* no later documents to give, and the agent's own query cannot widen it.
+
+    That is the same shape as section 11's repository scope, for the same reason -- a
+    request may narrow this and can never loosen it (:meth:`narrowed`). It is deliberately
+    absent from production: an unpinned daemon carries ``AsOf()``, every predicate is
+    ``None``, and not one query changes.
+    """
+
+    before: dt.datetime | None = None
+    exclude: tuple[int, ...] = ()
+
+    @property
+    def pinned(self) -> bool:
+        return self.before is not None or bool(self.exclude)
+
+    def narrowed(self, before: dt.datetime | None = None, exclude: Sequence[int] = ()) -> AsOf:
+        """This pin, tightened by one request. The *earlier* cutoff wins and the two
+        exclusion lists union, so neither half of a request can buy back what the pin
+        withheld."""
+        if before is not None and self.before is not None:
+            before = min(before, self.before)
+        return AsOf(
+            before=before if before is not None else self.before,
+            exclude=tuple(dict.fromkeys((*self.exclude, *exclude))),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "before": self.before.isoformat() if self.before else None,
+            "exclude": list(self.exclude),
+        }
+
+
 class Deps:
     """What the handlers need, built once. Not a framework choice -- the point is that the
     read-only engine and the backend are created at startup, so a request cannot open a
@@ -79,11 +122,13 @@ class Deps:
         auth: Authenticator | None = None,
         labels_path: Path | None = None,
         clone_root: str | None = None,
+        as_of: AsOf | None = None,
     ) -> None:
         self.engine = engine
         self.backend = open_backend(engine)
         self.auth = auth or Authenticator()
         self.labels_path = labels_path
+        self.as_of = as_of or AsOf()
         self.clones = WorkingClones(clone_root)
         self.counters: Counter[str] = Counter()
 
@@ -103,6 +148,10 @@ class Deps:
             "version": __version__,
             "backend": self.backend.info().as_dict(),
             "schema": describe(self.engine),
+            # An operator cannot tell a pinned daemon from a live one by reading a result,
+            # and a benchmark run that quietly lost its pin looks like a good result. So
+            # `status` says so, and says nothing when there is nothing to say.
+            **({"as_of": self.as_of.as_dict()} if self.as_of.pinned else {}),
             **summary,
         }
 
@@ -144,8 +193,9 @@ def build_app(
     auth: Authenticator | None = None,
     labels_path: Path | None = None,
     clone_root: str | None = None,
+    as_of: AsOf | None = None,
 ) -> FastAPI:
-    deps = Deps(engine, auth=auth, labels_path=labels_path, clone_root=clone_root)
+    deps = Deps(engine, auth=auth, labels_path=labels_path, clone_root=clone_root, as_of=as_of)
     app = FastAPI(title="relore", version=__version__, docs_url="/api/docs")
     app.state.deps = deps
 
@@ -189,6 +239,8 @@ def build_app(
             # over `repos` rather than a set intersection so the order stays the scope's.
             wanted = set(body.repos)
             repos = tuple(repo for repo in repos if repo in wanted)
+        # The pin first, the request second, and the request can only tighten it.
+        as_of = deps.as_of.narrowed(body.before, body.exclude)
         try:
             query = SearchQuery(
                 repos=repos,
@@ -201,6 +253,8 @@ def build_app(
                 tests=tuple(body.tests),
                 labels=tuple(body.labels),
                 since=body.since,
+                before=as_of.before,
+                exclude=as_of.exclude,
                 limit=body.limit,
                 compact=body.compact,
                 sort=body.sort,
@@ -219,6 +273,12 @@ def build_app(
                 # raised floor and a genuinely quiet corpus look identical otherwise.
                 "trust_floor": list(admissible_trust(query.trust, query.kind)),
                 "limit": query.limit,
+                # The same argument as the trust floor above: a cutoff is the one filter
+                # that can empty a page for a reason the caller cannot see in their own
+                # terms, and a benchmark misconfigured by a day looks exactly like a corpus
+                # with nothing to say. Echoed as sent.
+                "before": query.before.isoformat() if query.before else None,
+                "exclude": list(query.exclude),
                 # The *effective* scope, after the request's own repo filter narrowed it.
                 # Filtering to a repository the token cannot see comes back as `[]`, which
                 # is what makes that empty page diagnosable rather than mysterious.
@@ -310,6 +370,8 @@ def build_app(
         outline: bool = False,
         comment: str = "",
         files: bool = False,
+        before: dt.datetime | None = None,
+        exclude: Annotated[list[int], Query()] = [],  # noqa: B006 - FastAPI reads the default
     ) -> Response:
         """One thread, capped (section 6). See :func:`_one_repo` for ``repo``.
 
@@ -318,10 +380,23 @@ def build_app(
         path list costs when nobody asked for it -- see
         :meth:`~relore.search.backends.base.SearchBackend.thread` and
         :func:`~relore.render._file_lines` (relore#70).
+
+        A thread the cutoff has not reached, or one the daemon is pinned to withhold, is
+        **404** rather than an empty page: "this did not exist yet" and "this exists and
+        said nothing" are different answers, and only one of them is true.
         """
         repo = _one_repo(token, repo)
+        as_of = deps.as_of.narrowed(before, exclude)
         view = deps.backend.thread(
-            repo, number, focus=focus, full=full, after=after, outline=outline, comment=comment
+            repo,
+            number,
+            focus=focus,
+            full=full,
+            after=after,
+            outline=outline,
+            comment=comment,
+            before=as_of.before,
+            exclude=as_of.exclude,
         )
         if view is None:
             raise HTTPException(status_code=404, detail=f"{repo}#{number} not found")
@@ -345,6 +420,8 @@ def build_app(
         render: bool = False,
         compact: bool = False,
         presentation: bool = False,
+        before: dt.datetime | None = None,
+        exclude: Annotated[list[int], Query()] = [],  # noqa: B006 - FastAPI reads the default
     ) -> Response:
         """What already claims to close this thread (section 13.3).
 
@@ -353,7 +430,8 @@ def build_app(
         make the *unindexed* case indistinguishable from an error.
         """
         repo = _one_repo(token, repo)
-        view = deps.backend.inflight(repo, number)
+        as_of = deps.as_of.narrowed(before, exclude)
+        view = deps.backend.inflight(repo, number, before=as_of.before, exclude=as_of.exclude)
         payload = {"notice": NOTICE, **inflight_json(view)}
         return _json(
             payload,
@@ -527,6 +605,8 @@ def build_app(
         render: bool = False,
         compact: bool = False,
         presentation: bool = False,
+        before: dt.datetime | None = None,
+        exclude: Annotated[list[int], Query()] = [],  # noqa: B006 - FastAPI reads the default
     ) -> Response:
         """Why this line is the way it is (issue #9): blame, then the argument.
 
@@ -545,6 +625,7 @@ def build_app(
         # (relore#57). Falls back to the line where nothing can parse the file.
         start, end = _enclosing_span(root, path, line)
         history = line_history(root, path, start, end)
+        as_of = deps.as_of.narrowed(before, exclude)
         view = deps.backend.why(
             name,
             path,
@@ -556,6 +637,8 @@ def build_app(
             # backend for the same reason blame is: the clone is this layer's, and the
             # query layer stays a database away from a subprocess.
             origin=origin_history(root, path, line, known=history),
+            before=as_of.before,
+            exclude=as_of.exclude,
         )
         payload = {"notice": NOTICE, **why_json(view, blame=found)}
         return _json(
@@ -703,7 +786,13 @@ def _prometheus(deps: Deps) -> str:
 
 
 def serve(
-    url: str, *, host: str, port: int, allow_sqlite: bool, trust_network: bool = False
+    url: str,
+    *,
+    host: str,
+    port: int,
+    allow_sqlite: bool,
+    trust_network: bool = False,
+    as_of: AsOf | None = None,
 ) -> int:
     """Section 4.1's second guardrail, and the loopback rule.
 
@@ -762,7 +851,18 @@ def serve(
         )
 
     labels = os.environ.get(LABELS_ENV)
-    app = build_app(engine, auth=auth, labels_path=Path(labels) if labels else None)
+    app = build_app(engine, auth=auth, labels_path=Path(labels) if labels else None, as_of=as_of)
+    if as_of is not None and as_of.pinned:
+        # WARNING for the same reason the open-index line is: a pinned daemon is not a
+        # normal one, and serving a benchmark cutoff to real callers would be silently
+        # wrong in the direction nobody checks -- an index that is quietly missing the
+        # last six months answers every question plausibly.
+        log.warning(
+            "pinned to a cutoff: serving the index as of %s%s. This is an evaluation "
+            "mode, not a deployment.",
+            as_of.before.isoformat() if as_of.before else "(no cutoff)",
+            f", withholding {len(as_of.exclude)} thread(s)" if as_of.exclude else "",
+        )
 
     # Issue #7's clone ages by itself, and this process is the one that can refresh it:
     # the volume is ReadWriteOnce and held here. Off unless asked for -- a `git fetch` is

@@ -20,6 +20,7 @@ score what the filter would not have matched.
 
 from __future__ import annotations
 
+import datetime as dt
 import operator
 import re
 from abc import ABC, abstractmethod
@@ -95,6 +96,47 @@ class _Comments(NamedTuple):
     outline_matched: int | None = None
     outline_widened: bool = False
     comment_status: str = ""
+
+
+def _written_before(before: dt.datetime | None) -> tuple[Any, ...]:
+    """Section 13's cutoff over ``documents``, as predicates to splat into a ``where``.
+
+    Fails closed twice over. A NULL ``github_created_at`` compares NULL rather than TRUE,
+    so an undated document is dropped; and an absent cutoff returns no predicate at all,
+    so a caller that forgets one is not silently given a bound it did not ask for. Both
+    directions matter: this is the filter that makes an evaluation honest, and the way it
+    breaks is by quietly doing nothing.
+    """
+    return () if before is None else (s.documents.c.github_created_at < before,)
+
+
+def _opened_before(before: dt.datetime | None) -> tuple[Any, ...]:
+    """The same, over ``threads``. A thread opened at or after the cutoff did not exist."""
+    return () if before is None else (s.threads.c.created_at < before,)
+
+
+def _reachable(
+    conn: Any,
+    repo: str,
+    number: int,
+    before: dt.datetime | None,
+    exclude: Sequence[int],
+) -> bool:
+    """Whether one thread may be named at all, by number, under this cutoff."""
+    if number in tuple(exclude):
+        return False
+    if before is None:
+        return True
+    return (
+        conn.execute(
+            select(s.threads.c.id).where(
+                s.threads.c.repo == repo,
+                s.threads.c.github_number == number,
+                *_opened_before(before),
+            )
+        ).one_or_none()
+        is not None
+    )
 
 
 class SearchBackend(ABC):
@@ -436,6 +478,18 @@ class SearchBackend(ABC):
         ]
         if query.since is not None:
             where.append(s.documents.c.github_created_at >= query.since)
+        # Section 13's temporal cutoff, and it fails closed on its own. A NULL
+        # `github_created_at` compares NULL rather than TRUE, so a document whose date this
+        # index does not know is *excluded* from an `as_of` query instead of admitted to
+        # it. That is the right way round: an unknown date cannot be shown to predate the
+        # cutoff, and a leakage rule that admits what it cannot verify is not a rule. It is
+        # the opposite of `_decay`'s treatment of the same NULL -- there an unknown date is
+        # missing evidence and must not cost rank; here it is missing evidence and must not
+        # buy admission.
+        if query.before is not None:
+            where.append(s.documents.c.github_created_at < query.before)
+        if query.exclude:
+            where.append(s.threads.c.github_number.notin_(query.exclude))
         if query.labels:
             where.append(self._thread_has(s.thread_labels, s.thread_labels.c.label, query.labels))
         # The four signal filters below read tables that milestone 3's extraction pass
@@ -533,6 +587,8 @@ class SearchBackend(ABC):
         after: str = "",
         outline: bool = False,
         comment: str = "",
+        before: dt.datetime | None = None,
+        exclude: Sequence[int] = (),
     ) -> ThreadView | None:
         """One thread, capped (section 6).
 
@@ -558,7 +614,15 @@ class SearchBackend(ABC):
 
         ``outline`` short-circuits the page: nothing selects the ten rows a caller is not
         going to be shown (:meth:`_comments`).
+
+        ``before`` and ``exclude`` are the cutoff, and this verb needs them more than
+        ``search`` does: a benchmark can withhold a thread from every ranked page and still
+        hand it over to anyone who asks for it by number. A thread opened at or after the
+        cutoff, or named in ``exclude``, is **not found** rather than empty -- the two are
+        different answers and only one of them is true.
         """
+        if number in tuple(exclude):
+            return None
         with self.engine.connect() as conn:
             row = conn.execute(
                 select(s.threads).where(
@@ -566,6 +630,11 @@ class SearchBackend(ABC):
                 )
             ).one_or_none()
             if row is None:
+                return None
+            # `created_at` and not `updated_at`: a thread that existed before the cutoff is
+            # legitimately readable, and its later comments are dropped document by
+            # document below rather than by hiding the thread that carries them.
+            if before is not None and (row.created_at is None or row.created_at >= before):
                 return None
             labels = tuple(
                 str(label)
@@ -597,8 +666,10 @@ class SearchBackend(ABC):
             # Indexed, not `row.metadata`: `Row` shadows it.
             meta = row._mapping["metadata"] or {}
             changed = meta.get("changed_files")
-            body, body_chars, body_truncated = self._body(conn, row.id, full=full)
-            page = self._comments(conn, row, focus, after=after, outline=outline, comment=comment)
+            body, body_chars, body_truncated = self._body(conn, row.id, full=full, before=before)
+            page = self._comments(
+                conn, row, focus, after=after, outline=outline, comment=comment, before=before
+            )
 
         return ThreadView(
             repo=row.repo,
@@ -655,6 +726,8 @@ class SearchBackend(ABC):
         window: int = 25,
         history: Sequence[Any] = (),
         origin: Any = None,
+        before: dt.datetime | None = None,
+        exclude: Sequence[int] = (),
     ) -> WhyView:
         """What the index knows about the commit blame named, and about this line.
 
@@ -719,6 +792,12 @@ class SearchBackend(ABC):
                 for commit in origin_commits
             )
             number = int(row.github_number) if row else _number_from_summary(summary)
+            # A pull request the cutoff has not reached yet is *no answer*, not a hidden
+            # one: the blamed line is in a tree the agent was given, but the argument that
+            # produced it had not been made. Same shape as a commit that reached the tree
+            # through no indexed pull request, which this already answers.
+            if number is not None and not _reachable(conn, repo, number, before, exclude):
+                number = None
             if number is None:
                 return WhyView(
                     repo=repo,
@@ -732,7 +811,9 @@ class SearchBackend(ABC):
                     origin_considered=tuple(getattr(origin, "considered", ()) or ()),
                     origin_declined=str(getattr(origin, "declined", "") or ""),
                 )
-            at_line, on_file, reviews, level = _argument(conn, number, path, line, window)
+            at_line, on_file, reviews, level = _argument(
+                conn, number, path, line, window, before=before
+            )
         return WhyView(
             repo=repo,
             path=path,
@@ -741,7 +822,7 @@ class SearchBackend(ABC):
             summary=summary,
             number=number,
             resolved_by="commit" if row else "summary",
-            thread=self.thread(repo, number),
+            thread=self.thread(repo, number, before=before, exclude=exclude),
             anchored=tuple(at_line),
             on_file=tuple(on_file),
             reviews=tuple(reviews),
@@ -755,7 +836,14 @@ class SearchBackend(ABC):
 
     # -- what is already being worked on ---------------------------------
 
-    def inflight(self, repo: str, number: int) -> InflightView:
+    def inflight(
+        self,
+        repo: str,
+        number: int,
+        *,
+        before: dt.datetime | None = None,
+        exclude: Sequence[int] = (),
+    ) -> InflightView:
         """Which threads claim to close ``number``.
 
         The most expensive mistake an agent makes is writing a patch for something already
@@ -788,7 +876,12 @@ class SearchBackend(ABC):
                 .select_from(
                     s.thread_links.join(s.threads, s.thread_links.c.thread_id == s.threads.c.id)
                 )
-                .where(s.threads.c.repo == repo, s.thread_links.c.target_number == number)
+                .where(
+                    s.threads.c.repo == repo,
+                    s.thread_links.c.target_number == number,
+                    *_opened_before(before),
+                    *([s.threads.c.github_number.notin_(tuple(exclude))] if exclude else []),
+                )
                 .order_by(case((s.threads.c.state == "open", 0), else_=1), newest)
             ).all()
             indexed = int(
@@ -827,7 +920,9 @@ class SearchBackend(ABC):
             repo=repo, number=number, claims=claims, total=len(rows), links_indexed=indexed
         )
 
-    def _body(self, conn: Any, thread_id: int, *, full: bool) -> tuple[str, int, bool]:
+    def _body(
+        self, conn: Any, thread_id: int, *, full: bool, before: dt.datetime | None = None
+    ) -> tuple[str, int, bool]:
         """The opening post, how long it really is, and whether any of it was withheld.
 
         The cap is a token budget, not the "never returnable in full" contract: that one
@@ -855,6 +950,7 @@ class SearchBackend(ABC):
                 .where(
                     s.documents.c.thread_id == thread_id,
                     s.documents.c.source_type == "body",
+                    *_written_before(before),
                 )
                 .order_by(s.documents.c.chunk_index.asc())
             )
@@ -884,6 +980,7 @@ class SearchBackend(ABC):
         after: str = "",
         outline: bool = False,
         comment: str = "",
+        before: dt.datetime | None = None,
     ) -> _Comments:
         def documents(tiers: tuple[str, ...]) -> Select:
             return select(
@@ -900,6 +997,11 @@ class SearchBackend(ABC):
                 s.documents.c.thread_id == thread.id,
                 s.documents.c.source_type.notin_(("title", "body")),
                 s.documents.c.trust.in_(tiers),
+                # The cutoff rides inside `documents` rather than on `base`, so every
+                # derived select -- the machine-tier count below included -- is bounded by
+                # construction. A count that saw past the cutoff would announce comments
+                # the page cannot serve.
+                *_written_before(before),
             )
 
         base = documents(admissible_trust(None))
@@ -1240,7 +1342,13 @@ def _number_from_summary(summary: str) -> int | None:
 
 
 def _argument(
-    conn: Any, number: int, path: str, line: int, window: int
+    conn: Any,
+    number: int,
+    path: str,
+    line: int,
+    window: int,
+    *,
+    before: dt.datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str]:
     """What was said about this line, widening until something answers (relore#64).
 
@@ -1274,6 +1382,7 @@ def _argument(
         .where(
             s.threads.c.github_number == number,
             s.documents.c.source_type.in_(("review_comment", "review")),
+            *_written_before(before),
         )
     ).all()
 
