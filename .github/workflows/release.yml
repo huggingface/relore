@@ -18,6 +18,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   build_and_test:
+    permissions:
+      contents: read
     needs: checks
     runs-on: ubuntu-latest
     steps:
