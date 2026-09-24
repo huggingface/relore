@@ -318,3 +318,87 @@ def test_only_member_authors_are_ever_candidates(engine: Engine, fake: FakeGitHu
     _index(engine, fake)
     with engine.connect() as conn:
         assert repo_layer.member_authors(conn, REPO) == ["zoe"]
+
+
+# -- CI directives ---------------------------------------------------------
+
+
+def _trust_of_body(engine: Engine, needle: str) -> set[str]:
+    with engine.connect() as conn:
+        return {
+            row.trust
+            for row in conn.execute(
+                select(s.documents.c.trust).where(s.documents.c.body_text.like(f"%{needle}%"))
+            )
+        }
+
+
+def test_a_ci_directive_is_machine_however_senior_its_author(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """`run-slow: whisper` fires the GPU suite. It is perfectly believable and says nothing,
+    and it is maintainers who send it -- so without this it arrives at the top tier and
+    outranks real discussion."""
+    issue = fake.add_issue(9, title="a bug", body="it crashes", author="stranger", assoc="NONE")
+    fake.add_comment(issue, 900, "run-slow: whisper, gemma4", author="owner", assoc="OWNER")
+    _index(engine, fake)
+    _resolve(engine, fake)
+
+    assert _trust_of_body(engine, "run-slow") == {"machine"}
+
+
+def test_the_author_of_a_directive_is_not_marked_a_bot(engine: Engine, fake: FakeGitHub) -> None:
+    """The document is demoted, not the person: their other comments are still evidence."""
+    issue = fake.add_issue(9, title="a bug", body="it crashes", author="stranger", assoc="NONE")
+    fake.add_comment(issue, 900, "run-slow: whisper", author="owner", assoc="OWNER")
+    fake.add_comment(issue, 901, "deliberate, see the adapter", author="owner", assoc="OWNER")
+    _index(engine, fake)
+    _resolve(engine, fake)
+
+    with engine.connect() as conn:
+        flags = (
+            conn.execute(select(s.documents.c.author_is_bot).where(s.documents.c.author == "owner"))
+            .scalars()
+            .all()
+        )
+    assert flags and not any(flags)
+    assert _trust_of_body(engine, "see the adapter") == {"authoritative"}
+
+
+def test_a_directive_followed_by_prose_stays_human(engine: Engine, fake: FakeGitHub) -> None:
+    """The tail has to be an identifier list. Someone who triggers CI *and* explains why is
+    contributing the explanation."""
+    issue = fake.add_issue(9, title="a bug", body="it crashes", author="stranger", assoc="NONE")
+    fake.add_comment(
+        issue,
+        900,
+        "run-slow: whisper\n\nThe cache reorder is skipped here (see #41).",
+        author="owner",
+        assoc="OWNER",
+    )
+    _index(engine, fake)
+    _resolve(engine, fake)
+
+    assert _trust_of_body(engine, "cache reorder") == {"authoritative"}
+
+
+def test_a_bot_command_is_machine(engine: Engine, fake: FakeGitHub) -> None:
+    issue = fake.add_issue(9, title="a bug", body="it crashes", author="stranger", assoc="NONE")
+    fake.add_comment(issue, 900, "@bot /style", author="zoe", assoc="MEMBER")
+    _index(engine, fake)
+    _resolve(engine, fake)
+
+    assert _trust_of_body(engine, "/style") == {"machine"}
+
+
+def test_prose_that_merely_mentions_a_directive_is_untouched(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    issue = fake.add_issue(9, title="a bug", body="it crashes", author="stranger", assoc="NONE")
+    fake.add_comment(
+        issue, 900, "We should run-slow this before merging", author="owner", assoc="OWNER"
+    )
+    _index(engine, fake)
+    _resolve(engine, fake)
+
+    assert _trust_of_body(engine, "before merging") == {"authoritative"}

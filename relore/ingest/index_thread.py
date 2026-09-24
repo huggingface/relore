@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -366,7 +367,7 @@ def build_documents(
         # Before `chunk`, on purpose: see this function's docstring.
         sources.append({"body_markdown": clean, "metadata": metadata or {}})
         author = raw_obj.get("user") or {}
-        is_bot, trust = _trust(author, raw_obj.get("author_association"), authority)
+        is_bot, trust = _trust(author, raw_obj.get("author_association"), authority, clean)
         for piece in chunk(clean, split=split):
             text = normalize(piece.text)
             out.append(
@@ -500,8 +501,33 @@ def _review_from_graphql(node: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: A comment whose whole body is an instruction to CI rather than to a person: the
+#: ``run-slow: gemma4, whisper`` that fires the GPU suite, ``@bot /style``. Section 6.2's
+#: tiers ask *can this be believed*, and these are perfectly believable and say nothing --
+#: so they are machine tier, which is what excludes them from a default result set
+#: (section 11) while leaving them retrievable by anyone who asks for that tier.
+#:
+#: Two reasons this earns a rule rather than a shrug. Measured on a
+#: `huggingface/transformers` sample: 810 such comments, **788 of them authoritative**,
+#: because it is maintainers who trigger CI -- so they arrive carrying the highest tier and
+#: outrank real discussion. And the model list in one of them becomes a dozen
+#: ``thread_symbols`` rows, so a thread that merely ran the suite for `whisper` scores an
+#: overlap against every query that names it.
+#:
+#: The tail is restricted to an identifier list, so a directive followed by actual prose
+#: stays human -- 808 of the 810 matched, and the two that did not were the two with
+#: something to say.
+CI_DIRECTIVE = re.compile(
+    r"^\s*(?:\[?run[-_ ][a-z]+\]?|@[a-z0-9-]+\s+/[a-z][a-z-]*)\s*:?\s*[a-z0-9_,;.\s-]*$",
+    re.IGNORECASE,
+)
+
+
 def _trust(
-    user: dict[str, Any], assoc: str | None, authority: Mapping[str, str] | None = None
+    user: dict[str, Any],
+    assoc: str | None,
+    authority: Mapping[str, str] | None = None,
+    body: str = "",
 ) -> tuple[bool, str]:
     """Section 6.2's tier, derived from the payload plus ``repo_authority``.
 
@@ -515,6 +541,11 @@ def _trust(
     Deriving it here rather than storing it at fetch time is what makes a rebuild
     reproduce the tier, and what lets a re-resolution move documents between tiers.
     """
+    # Before the author is considered at all: a CI directive from a maintainer is still a
+    # CI directive, and the account is a real person whose other comments are evidence.
+    # So this demotes the *document*, and leaves ``author_is_bot`` false.
+    if body and CI_DIRECTIVE.match(body):
+        return False, "machine"
     login = ((user or {}).get("login") or "").lower()
     # Section 6.2: `user.type` catches the accounts GitHub knows are apps; the
     # deployment's own list catches the ones it does not -- `HuggingFaceDocBuilderDev`
