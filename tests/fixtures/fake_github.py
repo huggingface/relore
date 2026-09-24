@@ -128,6 +128,9 @@ class FakeGitHub:
         author: str = "bob",
         assoc: str = "CONTRIBUTOR",
         created_at: str = "2026-01-01T00:00:00Z",
+        # GitHub defines this per comment, so a later value really is an edit -- which is
+        # what the cutoff's "text as of T" rule turns on.
+        updated_at: str | None = None,
         bot: bool = False,
     ) -> dict[str, Any]:
         comment = {
@@ -136,7 +139,7 @@ class FakeGitHub:
             "user": account(author, bot=bot),
             "author_association": assoc,
             "created_at": created_at,
-            "updated_at": created_at,
+            "updated_at": updated_at or created_at,
             "html_url": f"https://github.test/c/{comment_id}",
             # What walk_issue_comments reads to find the thread, before the mirror
             # fields are stripped.

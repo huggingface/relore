@@ -98,16 +98,44 @@ class _Comments(NamedTuple):
     comment_status: str = ""
 
 
+#: Document types whose ``github_updated_at`` GitHub defines **per object**, so a later
+#: value is evidence the text itself changed. A thread's ``title`` and ``body`` carry the
+#: issue's own ``updated_at`` instead, which any activity bumps -- a new comment, a label, a
+#: close. Measured on a `huggingface/transformers` sample: 99.6% of bodies and titles carry a
+#: timestamp later than their creation, against 8.7% of issue comments. Applying the rule
+#: below to those would drop about 5% of a corpus, including the opening statement of every
+#: active thread, to catch almost nothing.
+EDITABLE_PER_OBJECT = ("issue_comment", "review_comment")
+
+
 def written_before(before: dt.datetime | None) -> tuple[Any, ...]:
     """Section 13's cutoff over ``documents``, as predicates to splat into a ``where``.
 
-    Fails closed twice over. A NULL ``github_created_at`` compares NULL rather than TRUE,
-    so an undated document is dropped; and an absent cutoff returns no predicate at all,
-    so a caller that forgets one is not silently given a bound it did not ask for. Both
-    directions matter: this is the filter that makes an evaluation honest, and the way it
-    breaks is by quietly doing nothing.
+    A cutoff means *the text as it stood at* ``before``, not merely a row created earlier.
+    A comment written in 2024 and edited in 2026 is a 2024 row carrying 2026 words, so it is
+    excluded: ``documents.body_text`` holds the current text and nothing here can reconstruct
+    the old one. ``documents_history`` may still have a copy, and serving that instead is the
+    better fix -- it would keep the document rather than drop it -- but until something does,
+    admitting the row on the strength of a history table nobody reads would re-open the leak
+    it was meant to close. On the sample above this costs 6 documents in 25,209.
+
+    Fails closed three times over. A NULL ``github_created_at`` compares NULL rather than
+    TRUE, so an undated document is dropped; a NULL ``github_updated_at`` cannot show an
+    edit, so it is kept only because the creation bound already holds; and an absent cutoff
+    returns no predicate at all, so a caller that forgets one is not silently given a bound
+    it did not ask for. That last direction matters most: this is the filter that makes an
+    evaluation honest, and the way it breaks is by quietly doing nothing.
     """
-    return () if before is None else (s.documents.c.github_created_at < before,)
+    if before is None:
+        return ()
+    return (
+        s.documents.c.github_created_at < before,
+        or_(
+            s.documents.c.source_type.notin_(EDITABLE_PER_OBJECT),
+            s.documents.c.github_updated_at.is_(None),
+            s.documents.c.github_updated_at < before,
+        ),
+    )
 
 
 def _opened_before(before: dt.datetime | None) -> tuple[Any, ...]:

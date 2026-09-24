@@ -316,3 +316,61 @@ def test_a_claim_that_predates_the_cutoff_still_answers(engine: Engine, fake: Fa
     _index(engine, fake, 1, 2)
 
     assert [c.number for c in open_backend(engine).inflight(REPO, 1, before=CUTOFF).claims] == [2]
+
+
+# -- a cutoff means the text as of T, not merely a row created before it -----
+
+
+def test_a_comment_edited_after_the_cutoff_is_unreachable(engine: Engine, fake: FakeGitHub) -> None:
+    """The row is old; the words are not. `body_text` holds the current text and nothing
+    here can reconstruct the old one, so the document is excluded rather than served."""
+    pr = fake.add_pr(1, body="the mask marker as first reported")
+    fake.add_comment(pr, 100, "the marker, rewritten later", created_at=BEFORE, updated_at=AFTER)
+    _index(engine, fake, 1)
+
+    hits = _search(engine, text="rewritten", before=CUTOFF)
+
+    assert hits == []
+
+
+def test_an_unedited_comment_is_still_reachable(engine: Engine, fake: FakeGitHub) -> None:
+    pr = fake.add_pr(1, body="an opening")
+    fake.add_comment(pr, 100, "the marker, never touched", created_at=BEFORE, updated_at=BEFORE)
+    _index(engine, fake, 1)
+
+    assert [h.source_type for h in _search(engine, text="never touched", before=CUTOFF)] == [
+        "issue_comment"
+    ]
+
+
+def test_a_thread_body_is_not_dropped_for_thread_activity(engine: Engine, fake: FakeGitHub) -> None:
+    """A title or body carries the *thread's* updated_at, which a new comment bumps. Applying
+    the edit rule there would drop the opening statement of every active thread -- measured
+    at 99.6% of bodies on a transformers sample, against 8.7% of issue comments."""
+    fake.add_pr(1, body="the mask marker as first reported", updated_at=AFTER)
+    _index(engine, fake, 1)
+
+    assert {h.source_type for h in _search(engine, text="mask marker", before=CUTOFF)} == {"body"}
+
+
+def test_an_edited_comment_is_unreachable_through_the_by_number_verbs(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """The same rule, through `thread()`: one predicate, so every path agrees."""
+    pr = fake.add_pr(1, body="an opening")
+    fake.add_comment(pr, 100, "rewritten later", created_at=BEFORE, updated_at=AFTER)
+    _index(engine, fake, 1)
+
+    served = open_backend(engine).thread(REPO, 1, before=CUTOFF)
+
+    assert served is not None
+    assert all("rewritten" not in (c.body_text or "") for c in served.comments)
+
+
+def test_an_unbounded_query_still_sees_the_edited_comment(engine: Engine, fake: FakeGitHub) -> None:
+    """No cutoff, no predicate: not one production query changes."""
+    pr = fake.add_pr(1, body="an opening")
+    fake.add_comment(pr, 100, "rewritten later", created_at=BEFORE, updated_at=AFTER)
+    _index(engine, fake, 1)
+
+    assert len(_search(engine, text="rewritten")) == 1
