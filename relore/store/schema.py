@@ -133,6 +133,17 @@ Index("raw_objects_thread_idx", raw_objects.c.repo, raw_objects.c.thread_number)
 
 # Signal tables, kept separate from documents so an exact match can be weighted
 # independently of prose. Nothing writes them until milestone 3.
+# Section 13's cutoff, on the five tables a query filters and ranks *by* (see
+# temporal-cutoff-map.md section 8). The earliest instant at which this thread is known to have
+# carried this value: a `min` over the documents that produced it, and `merged_at` for the
+# two things no document carries -- a merged pull request's changed-file list and its
+# commits. Nullable, and null fails closed the way an undated document does, because
+# "we do not know when this appeared" must not read as "it was always there".
+#
+# One row per (thread, value) is preserved, which is the whole reason this is a timestamp
+# and not a `document_id`: `extract_signals` deduplicates across a thread's documents on
+# purpose and section 6's overlap terms count rows, so splitting a row would move
+# production ranking. This column is read *only* when `as_of` is set.
 thread_files = Table(
     "thread_files",
     metadata,
@@ -147,6 +158,7 @@ thread_files = Table(
     # `huggingface/transformers#39847` was both (huggingface/relore#17). `change_type`
     # cannot carry this: it is null for the first two of those as well as the third.
     Column("source", Text),
+    Column("first_seen_at", UTCDateTime),
 )
 thread_symbols = Table(
     "thread_symbols",
@@ -155,6 +167,7 @@ thread_symbols = Table(
     Column("symbol", Text, nullable=False),
     Column("path", Text),
     Column("symbol_type", Text),
+    Column("first_seen_at", UTCDateTime),
 )
 thread_errors = Table(
     "thread_errors",
@@ -162,6 +175,7 @@ thread_errors = Table(
     _fk("threads.id"),
     Column("exception_type", Text),
     Column("message_norm", Text),
+    Column("first_seen_at", UTCDateTime),
 )
 thread_tests = Table(
     "thread_tests",
@@ -169,6 +183,7 @@ thread_tests = Table(
     _fk("threads.id"),
     Column("test_id", Text, nullable=False),
     Column("test_function", Text),
+    Column("first_seen_at", UTCDateTime),
 )
 thread_commits = Table(
     "thread_commits",
@@ -176,6 +191,7 @@ thread_commits = Table(
     _fk("threads.id"),
     Column("sha", Text, nullable=False),
     Column("message", Text),
+    Column("first_seen_at", UTCDateTime),
 )
 # The relationship edge (section 5.3, section 13.3): "this pull request claims to close
 # #N". Two columns for the target, and that is the whole design decision:

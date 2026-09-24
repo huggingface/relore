@@ -246,25 +246,73 @@ def test_a_naive_cutoff_is_refused_at_the_boundary(engine: Engine, tmp_path: Pat
 # -- the post-filter -------------------------------------------------------
 
 
-def test_the_post_filter_drops_a_thread_selected_by_evidence_that_did_not_exist_yet(
+def test_the_query_layer_drops_what_the_post_filter_was_built_for(
     engine: Engine, fake: FakeGitHub
 ) -> None:
-    """The measured leak, and the reason this module exists.
+    """The leak this module was built to mitigate, closed at the source.
 
-    ``thread_files`` carries ``src/mod.py`` with no date, so the ``EXISTS`` matches and the
-    thread's pre-cutoff opening comes back: every document on the page is genuinely
-    pre-cutoff, and the leak is the *selection*. The strict xfail in
-    ``test_temporal_cutoff`` asserts the same scenario against the query layer, where it is
-    still open.
+    ``thread_files`` now carries ``first_seen_at``, so the ``EXISTS`` no longer matches and
+    the page is empty before the post-filter sees it (``test_temporal_cutoff`` asserts the
+    query side). What this leaves for :class:`SignalPostFilter` is not mitigation -- it is
+    the cross-check below.
     """
     pr = fake.add_pr(1, body="an opening with no path in it")
     fake.add_review_comment(pr, 300, "this belongs upstream", path="src/mod.py", created_at=AFTER)
     _index(engine, fake, 1)
 
     query = _query(files=("src/mod.py",), before=CUTOFF)
-    hits = open_backend(engine).search(query)
-    assert hits, "the leak itself: the index still selects this thread"
 
+    assert open_backend(engine).search(query) == []
+
+
+def test_the_post_filter_drops_nothing_the_query_layer_admits(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """The cross-check, and the reason to keep this module now that it mitigates nothing.
+
+    Two implementations of one question, reached by different roads: the query reads a
+    stored ``first_seen_at``, the post-filter re-derives from the text of the documents the
+    thread had by ``T``. Agreement is the assertion. Section 13.2 #3 is the entry about
+    what two implementations of one predicate do when nobody checks.
+    """
+    early = fake.add_pr(1, body="an opening")
+    fake.add_review_comment(
+        early, 300, "the mask is wrong here", path="src/mod.py", created_at=BEFORE
+    )
+    late = fake.add_pr(2, body="another opening")
+    fake.add_review_comment(late, 301, "this belongs upstream", path="src/mod.py", created_at=AFTER)
+    _index(engine, fake, 1, 2)
+
+    query = _query(files=("src/mod.py",), before=CUTOFF)
+    hits = open_backend(engine).search(query)
+
+    assert {h.number for h in hits} == {1}
+    assert SignalPostFilter(engine, CUTOFF).dropped(hits, query) == []
+
+
+def test_the_post_filter_catches_a_date_the_index_got_wrong(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """And the cross-check has teeth, which an agreement test alone would not show.
+
+    A ``first_seen_at`` moved back to before the cutoff is what a stale extractor or a
+    hand-edited row looks like. The query believes the column; the post-filter reads the
+    documents and does not.
+    """
+    pr = fake.add_pr(1, body="an opening with no path in it")
+    fake.add_review_comment(pr, 300, "this belongs upstream", path="src/mod.py", created_at=AFTER)
+    _index(engine, fake, 1)
+    with engine.begin() as conn:
+        conn.execute(
+            update(s.thread_files).values(
+                first_seen_at=dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+            )
+        )
+
+    query = _query(files=("src/mod.py",), before=CUTOFF)
+    hits = open_backend(engine).search(query)
+
+    assert hits, "the tampered date is believed by the query layer"
     assert SignalPostFilter(engine, CUTOFF).keep(hits, query) == []
 
 
@@ -287,15 +335,18 @@ def test_a_path_the_thread_already_named_survives_the_post_filter(
 def test_a_symbol_first_named_after_the_cutoff_drops_the_thread(
     engine: Engine, fake: FakeGitHub
 ) -> None:
+    """Both roads, on the symbol leg: the query does not select it, and the post-filter
+    would not have kept it either."""
     pr = fake.add_pr(1, body="an opening with no symbol in it")
     fake.add_comment(pr, 100, "the cause is `rotate_half()`", created_at=AFTER)
     _index(engine, fake, 1)
 
     query = _query(symbols=("rotate_half",), before=CUTOFF)
-    hits = open_backend(engine).search(query)
-    assert hits
+    assert open_backend(engine).search(query) == []
 
-    assert SignalPostFilter(engine, CUTOFF).keep(hits, query) == []
+    unbounded = open_backend(engine).search(_query(symbols=("rotate_half",)))
+    assert unbounded
+    assert SignalPostFilter(engine, CUTOFF).keep(unbounded, query) == []
 
 
 def test_an_error_first_pasted_after_the_cutoff_drops_the_thread(
@@ -311,10 +362,13 @@ def test_an_error_first_pasted_after_the_cutoff_drops_the_thread(
     _index(engine, fake, 1)
 
     query = _query(errors=("ValueError: shapes 3 and 4 not aligned",), before=CUTOFF)
-    hits = open_backend(engine).search(query)
-    assert hits
+    assert open_backend(engine).search(query) == []
 
-    assert SignalPostFilter(engine, CUTOFF).keep(hits, query) == []
+    unbounded = open_backend(engine).search(
+        _query(errors=("ValueError: shapes 3 and 4 not aligned",))
+    )
+    assert unbounded
+    assert SignalPostFilter(engine, CUTOFF).keep(unbounded, query) == []
 
 
 def test_a_query_with_no_signal_filter_is_untouched(engine: Engine, fake: FakeGitHub) -> None:
@@ -389,10 +443,28 @@ def test_a_pull_request_merged_after_the_cutoff_contributes_none_of_its_diff(
     _with_details(engine, fake, 1)
 
     query = _query(files=("src/mod.py",), before=CUTOFF)
-    hits = open_backend(engine).search(query)
-    assert hits
+    assert open_backend(engine).search(query) == []
 
-    assert SignalPostFilter(engine, CUTOFF).keep(hits, query) == []
+    unbounded = open_backend(engine).search(_query(files=("src/mod.py",)))
+    assert unbounded
+    assert SignalPostFilter(engine, CUTOFF).keep(unbounded, query) == []
+
+
+def test_a_pull_request_merged_before_the_cutoff_contributes_its_diff(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """The other direction of the same rule, on the query side: the list was final at the
+    merge, and the merge is history."""
+    pr = fake.add_pr(1, body="an opening with no path in it", merged_at=BEFORE)
+    pr.files = ["src/mod.py"]
+    _index(engine, fake, 1)
+    _with_details(engine, fake, 1)
+
+    query = _query(files=("src/mod.py",), before=CUTOFF)
+    hits = open_backend(engine).search(query)
+
+    assert {h.number for h in hits} == {1}
+    assert SignalPostFilter(engine, CUTOFF).dropped(hits, query) == []
 
 
 # -- the two implementations of one predicate ------------------------------

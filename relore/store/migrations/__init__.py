@@ -14,13 +14,18 @@ from typing import Any
 
 from sqlalchemy import Connection, Engine, func, insert, inspect, select, text
 
-from relore.store.dialect import utcnow
+from relore.store.dialect import UTCDateTime, utcnow
 from relore.store.schema import (
     documents_history,
     metadata,
     repo_sample,
     schema_migrations,
+    thread_commits,
+    thread_errors,
+    thread_files,
     thread_links,
+    thread_symbols,
+    thread_tests,
 )
 
 log = logging.getLogger(__name__)
@@ -211,6 +216,31 @@ def _file_provenance(conn: Connection) -> None:
     conn.execute(text("ALTER TABLE thread_files ADD COLUMN source TEXT"))
 
 
+def _signal_first_seen(conn: Connection) -> None:
+    """``first_seen_at`` on the five extracted signal tables (temporal-cutoff-map.md 8).
+
+    Section 13's cutoff is enforced on ``documents`` and the five ``thread_*`` tables carry
+    no date, so a path or a symbol first named *after* the cutoff was attributed to the
+    whole thread and selected that thread's pre-cutoff documents. No future text reached
+    the caller -- the leak was in the selection, not the payload -- but an as-of-``T``
+    deployment could not have made the match, which inflates anything that filters or ranks
+    structurally.
+
+    Same shape as step 7 and for the same reason: columns on tables that have existed since
+    step 1, so ``create_all(checkfirst=True)`` will not add them. Nullable, and **no
+    backfill** -- the value is derived, so every row gets one from the next ``relored
+    derive``, which reads ``raw_objects`` and needs no network. Until that runs, null reads
+    as "this index predates the column", and the cutoff drops the row rather than admitting
+    it: an unbounded query is unaffected, and a bounded one is conservative. That is the
+    right direction for a migration whose whole purpose is to stop over-admitting.
+    """
+    column_type = UTCDateTime().compile(conn.dialect)
+    for table in (thread_files, thread_symbols, thread_errors, thread_tests, thread_commits):
+        if "first_seen_at" in {c["name"] for c in inspect(conn).get_columns(table.name)}:
+            continue
+        conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN first_seen_at {column_type}"))
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "portable_core", _portable_core),
     (2, "postgres_search_layer", _postgres_search_layer),
@@ -219,6 +249,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (5, "document_history", _document_history),
     (6, "link_claims", _link_claims),
     (7, "file_provenance", _file_provenance),
+    (8, "signal_first_seen", _signal_first_seen),
 )
 
 

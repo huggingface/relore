@@ -7,6 +7,8 @@ done-when, and if it ever goes red the whole incremental story is gone.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 from fake_github import FakeGitHub
 from sqlalchemy import Engine, func, select
@@ -161,9 +163,13 @@ def test_a_thread_nobody_reviewed_carries_no_decision(engine: Engine, fake: Fake
 # -- signals (section 5.3) -------------------------------------------------
 
 
-def _signal_rows(engine: Engine, table) -> list[tuple]:
+def _signal_rows(engine: Engine, table, *, dates: bool = False) -> list[tuple]:
+    """One thread's signal rows as tuples. ``first_seen_at`` is left out unless asked for:
+    every row has one, and a test about *which rows were extracted* reads better without a
+    timestamp repeated down the column. :func:`_signal_dates` is where it is the subject."""
+    skip = {"thread_id"} if dates else {"thread_id", "first_seen_at"}
     with engine.connect() as conn:
-        columns = [c for c in table.columns if c.name != "thread_id"]
+        columns = [c for c in table.columns if c.name not in skip]
         return sorted(tuple(row) for row in conn.execute(select(*columns)))
 
 
@@ -238,6 +244,49 @@ def test_rederiving_an_unchanged_thread_writes_no_signal_rows_either(
     assert first.signals.wrote > 0
     assert second.signals.wrote == 0, "a no-change poll must not rewrite a signal table"
     assert second.stats.wrote == 0
+
+
+def test_a_signal_carries_the_date_of_the_document_it_was_read_out_of(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """Section 13's cutoff reads this column, so what fills it is not an implementation
+    detail of extraction -- it is the evidence the bound rests on."""
+    pr = fake.add_pr(1, body="an opening with no path in it")
+    fake.add_comment(pr, 100, "it is src/mod.py", created_at="2026-01-15T00:00:00Z")
+    fake.add_comment(pr, 101, "and utils/helper.py", created_at="2026-06-01T00:00:00Z")
+
+    _index(engine, fake, 1)
+
+    assert _signal_rows(engine, s.thread_files, dates=True) == [
+        ("src/mod.py", None, "mentioned", _at("2026-01-15")),
+        ("utils/helper.py", None, "mentioned", _at("2026-06-01")),
+    ]
+
+
+def test_an_edited_comment_dates_its_signals_from_the_edit(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """``documents.body_markdown`` holds the *current* text, so a path added by an edit
+    dates from the edit and not from the writing -- the same rule ``written_before``
+    applies to the document itself, applied to the row that outlives it."""
+    pr = fake.add_pr(1, body="an opening with no path in it")
+    fake.add_comment(
+        pr,
+        100,
+        "it is src/mod.py after all",
+        created_at="2026-01-15T00:00:00Z",
+        updated_at="2026-06-01T00:00:00Z",
+    )
+
+    _index(engine, fake, 1)
+
+    assert _signal_rows(engine, s.thread_files, dates=True) == [
+        ("src/mod.py", None, "mentioned", _at("2026-06-01"))
+    ]
+
+
+def _at(when: str):
+    return dt.datetime.fromisoformat(when).replace(tzinfo=dt.timezone.utc)
 
 
 def test_editing_a_comment_moves_only_the_signals_it_changed(

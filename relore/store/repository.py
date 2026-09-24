@@ -401,12 +401,19 @@ def keep_versions(
 #: unique constraint: a signal row is its own value, so the identity of a set of them is
 #: the tuple, and :func:`reconcile_signals` compares sets rather than keys. A duplicate is
 #: unrepresentable rather than rejected -- both sides of that comparison are sets.
+#:
+#: ``first_seen_at`` is on the five extracted tables and not on ``links``: section 6's
+#: ``w_rel`` is 0, so no query filters or scores by an edge yet, and a column no predicate
+#: reads is the mistake section 5.3 declines for keywords. It is part of the *row* like
+#: ``trust`` and ``target_thread_id`` are -- a value that appears earlier than the stored
+#: one is a different row and the reconcile has to notice, which it does because the
+#: comparison below is over exactly these columns.
 SIGNAL_TABLES: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
-    ("files", s.thread_files, ("path", "change_type", "source")),
-    ("symbols", s.thread_symbols, ("symbol", "path", "symbol_type")),
-    ("errors", s.thread_errors, ("exception_type", "message_norm")),
-    ("tests", s.thread_tests, ("test_id", "test_function")),
-    ("commits", s.thread_commits, ("sha", "message")),
+    ("files", s.thread_files, ("path", "change_type", "source", "first_seen_at")),
+    ("symbols", s.thread_symbols, ("symbol", "path", "symbol_type", "first_seen_at")),
+    ("errors", s.thread_errors, ("exception_type", "message_norm", "first_seen_at")),
+    ("tests", s.thread_tests, ("test_id", "test_function", "first_seen_at")),
+    ("commits", s.thread_commits, ("sha", "message", "first_seen_at")),
     # Section 13.3. `target_thread_id` is part of the row rather than an update to it, so
     # a target that becomes indexed later changes the row and the reconcile notices --
     # the same reason `trust` is in DERIVED_COLUMNS.

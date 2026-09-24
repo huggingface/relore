@@ -36,12 +36,14 @@ are the next piece of milestone 3 and are gated on section 10's evaluation set.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from relore.ingest.normalize import redact
+from relore.ingest.timestamps import first_seen_at
 
 # -- where a path came from (huggingface/relore#17) ------------------------
 
@@ -231,13 +233,31 @@ MAX_MESSAGE_CHARS = 300
 
 
 def extract_signals(
-    documents: Iterable[Mapping[str, Any]], detail: Mapping[str, Any] | None = None
+    documents: Iterable[Mapping[str, Any]],
+    detail: Mapping[str, Any] | None = None,
+    merged_at: dt.datetime | None = None,
 ) -> Signals:
-    """Every signal row for one thread.
+    """Every signal row for one thread, each dated with when the thread first carried it.
 
     ``documents`` are the rows about to be written, so extraction sees exactly the text
     retrieval will. ``detail`` is the per-PR GraphQL node (section 3), the only source of
     a merged PR's changed-file list and commits.
+
+    ``merged_at`` dates those two. Nothing in ``detail`` carries a date of its own --
+    ``files.nodes`` is ``path additions deletions changeType`` and ``commits.nodes`` is
+    ``oid messageHeadline messageBody`` (``github/graphql.py``) -- and asking GitHub for
+    one would make a re-derive a network operation, which is the property that makes
+    ``relored derive`` rebuildable offline. So the date used is the one instant the list
+    is known to have been final, which is the same rule
+    :func:`relore.bench.corpus._merged_diff_paths` already applies to the same rows: a
+    pull request still open at the cutoff contributes none of its diff, because the prefix
+    it had then cannot be reconstructed. ``None`` for an unmerged thread, which fails
+    closed.
+
+    Each document is scanned into its own dictionaries and merged, rather than scanned
+    into shared ones. The merge rules are the ones the shared dictionaries had -- first
+    non-null wins, everywhere -- so the rows are unchanged; what the split buys is knowing
+    *which* document produced a value, without which the date is a guess.
     """
     files: dict[str, str | None] = {}
     #: Where each path came from, strongest wins (see :data:`FILE_SOURCES`). Kept beside
@@ -248,42 +268,99 @@ def extract_signals(
     symbols: dict[tuple[str, str | None], str | None] = {}
     errors: dict[tuple[str | None, str], None] = {}
     tests: dict[tuple[str, str | None], None] = {}
+    #: ``(table, row key) -> the earliest document that produced it``. Keyed by table too
+    #: because a path and a test id are both strings and both live in here.
+    dates: dict[tuple[str, Any], list[dt.datetime | None]] = {}
+
+    def note(table: str, keys: Iterable[Any], when: dt.datetime | None) -> None:
+        for key in keys:
+            dates.setdefault((table, key), []).append(when)
 
     for document in documents:
-        text = _readable(document)
-        _scan_text(text, files=files, symbols=symbols, errors=errors, tests=tests)
+        when = document.get("existed_at")
+        seen_files: dict[str, str | None] = {}
+        seen_symbols: dict[tuple[str, str | None], str | None] = {}
+        seen_errors: dict[tuple[str | None, str], None] = {}
+        seen_tests: dict[tuple[str, str | None], None] = {}
+        _scan_text(
+            _readable(document),
+            files=seen_files,
+            symbols=seen_symbols,
+            errors=seen_errors,
+            tests=seen_tests,
+        )
+        # An inline review comment's path is definitive: GitHub attached it to that file.
+        definitive = _definitive_path(str((document.get("metadata") or {}).get("path") or ""))
+        if definitive:
+            seen_files.setdefault(definitive, None)
+
+        for path, change_type in seen_files.items():
+            files.setdefault(path, change_type)
+        for key, kind in seen_symbols.items():
+            if symbols.get(key) is None:
+                symbols[key] = kind
+        errors.update({key: None for key in seen_errors if key not in errors})
+        tests.update({key: None for key in seen_tests if key not in tests})
+
+        note("files", seen_files, when)
+        note("symbols", seen_symbols, when)
+        note("errors", seen_errors, when)
+        note("tests", seen_tests, when)
+
         # Everything `_scan_text` adds is read out of prose: a traceback frame, a node id,
         # a path-shaped token. Inference, and sometimes a bare basename.
         for path in files:
             sources.setdefault(path, MENTIONED)
-        # An inline review comment's path is definitive: GitHub attached it to that file.
-        path = _definitive_path(str((document.get("metadata") or {}).get("path") or ""))
-        if path:
-            files.setdefault(path, None)
-            sources[path] = FROM_COMMENT
+        if definitive:
+            sources[definitive] = FROM_COMMENT
 
     for path, change_type in _changed_files(detail):
         files[path] = change_type
         sources[path] = CHANGED
+        note("files", (path,), merged_at)
+
+    commits = _commits(detail)
+    note("commits", (row["sha"] for row in commits), merged_at)
+
+    def dated(table: str, key: Any) -> dt.datetime | None:
+        return first_seen_at(dates.get((table, key), ()))
 
     return Signals(
         files=[
-            {"path": path, "change_type": change, "source": sources.get(path, MENTIONED)}
+            {
+                "path": path,
+                "change_type": change,
+                "source": sources.get(path, MENTIONED),
+                "first_seen_at": dated("files", path),
+            }
             for path, change in sorted(files.items())
         ],
         symbols=[
-            {"symbol": symbol, "path": path, "symbol_type": kind}
+            {
+                "symbol": symbol,
+                "path": path,
+                "symbol_type": kind,
+                "first_seen_at": dated("symbols", (symbol, path)),
+            }
             for (symbol, path), kind in sorted(symbols.items(), key=_symbol_sort)
         ],
         errors=[
-            {"exception_type": exception, "message_norm": message}
+            {
+                "exception_type": exception,
+                "message_norm": message,
+                "first_seen_at": dated("errors", (exception, message)),
+            }
             for exception, message in sorted(errors, key=lambda k: (k[0] or "", k[1]))
         ],
         tests=[
-            {"test_id": test_id, "test_function": function}
+            {
+                "test_id": test_id,
+                "test_function": function,
+                "first_seen_at": dated("tests", (test_id, function)),
+            }
             for test_id, function in sorted(tests, key=lambda k: (k[0], k[1] or ""))
         ],
-        commits=list(_commits(detail)),
+        commits=[{**row, "first_seen_at": dated("commits", row["sha"])} for row in commits],
     )
 
 

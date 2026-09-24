@@ -7,6 +7,8 @@ these name something the extractor must *not* claim.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from relore.ingest.extract import (
@@ -21,6 +23,18 @@ def _signals(*bodies: str, detail: dict | None = None, hunk: str | None = None):
         {"body_markdown": body, "metadata": {"diff_hunk": hunk} if hunk else {}} for body in bodies
     ]
     return extract_signals(documents, detail=detail)
+
+
+def _dated(*documents: tuple[str, str | None], **kwargs):
+    """``(body, iso date)`` pairs, which is what the date rules below are about."""
+    rows = [
+        {"body_markdown": body, "metadata": {}, "existed_at": _at(when)} for body, when in documents
+    ]
+    return extract_signals(rows, **kwargs)
+
+
+def _at(when: str | None) -> dt.datetime | None:
+    return None if when is None else dt.datetime.fromisoformat(when).replace(tzinfo=dt.timezone.utc)
 
 
 def _paths(*bodies: str) -> set[str]:
@@ -64,7 +78,14 @@ def test_the_changed_file_list_wins_over_prose() -> None:
     detail = {"files": {"nodes": [{"path": "src/mod.py", "changeType": "ADDED"}]}}
     rows = _signals("touches src/mod.py", detail=detail).files
 
-    assert rows == [{"path": "src/mod.py", "change_type": "ADDED", "source": "changed"}]
+    assert rows == [
+        {
+            "path": "src/mod.py",
+            "change_type": "ADDED",
+            "source": "changed",
+            "first_seen_at": None,
+        }
+    ]
 
 
 def test_an_inline_comments_own_path_is_definitive() -> None:
@@ -158,7 +179,11 @@ def test_an_error_line_yields_its_type_and_a_normalized_message() -> None:
     rows = _signals("ValueError: expected 768 features, got 1024").errors
 
     assert rows == [
-        {"exception_type": "ValueError", "message_norm": "expected <n> features, got <n>"}
+        {
+            "exception_type": "ValueError",
+            "message_norm": "expected <n> features, got <n>",
+            "first_seen_at": None,
+        }
     ]
 
 
@@ -265,7 +290,7 @@ def test_a_node_id_naming_a_class_records_no_function() -> None:
     Recording it as ``test_function`` would put a class name in the column a query
     filters functions by."""
     assert _signals("tests/t.py::ProviderTests is red").tests == [
-        {"test_id": "tests/t.py::ProviderTests", "test_function": None}
+        {"test_id": "tests/t.py::ProviderTests", "test_function": None, "first_seen_at": None}
     ]
 
 
@@ -282,6 +307,7 @@ def test_a_dotted_unittest_id_counts() -> None:
         {
             "test_id": "tests.models.test_gemma.GemmaTest.test_generate",
             "test_function": "test_generate",
+            "first_seen_at": None,
         }
     ]
 
@@ -300,7 +326,7 @@ def test_commits_come_from_the_pr_pass_and_never_from_prose() -> None:
     detail = {"commits": {"nodes": [{"commit": {"oid": "abc1234", "messageHeadline": "fix it"}}]}}
 
     assert _signals("reverted in deadbeef", detail=detail).commits == [
-        {"sha": "abc1234", "message": "fix it"}
+        {"sha": "abc1234", "message": "fix it", "first_seen_at": None}
     ]
     assert _signals("reverted in deadbeef").commits == []
 
@@ -325,3 +351,117 @@ def test_a_thread_with_nothing_extractable_yields_nothing() -> None:
     signals = _signals("Thanks, merged!", "LGTM")
 
     assert signals.total == 0
+
+
+# -- first_seen_at (temporal-cutoff-map.md 8) ------------------------------
+#
+# One row stands for every document that produced it, which is what keeps `_overlap`'s
+# counts and production ranking unchanged. So the row's date is a `min` over those
+# documents, and the cases below are the ways that `min` can be got wrong.
+
+
+def test_a_signal_is_dated_by_the_earliest_document_that_carried_it() -> None:
+    signals = _dated(
+        ("the fix is in src/mod.py", "2026-06-01"),
+        ("as I said, src/mod.py", "2026-01-01"),
+    )
+
+    assert [row["first_seen_at"] for row in signals.files] == [_at("2026-01-01")]
+
+
+def test_a_signal_only_a_later_document_carries_is_dated_by_that_one() -> None:
+    signals = _dated(
+        ("nothing quotable here", "2026-01-01"),
+        ("the fix is in src/mod.py", "2026-06-01"),
+    )
+
+    assert [row["first_seen_at"] for row in signals.files] == [_at("2026-06-01")]
+
+
+def test_an_undated_contributor_does_not_unsettle_a_dated_one() -> None:
+    """The claim ``first_seen_at < T`` makes is *the thread certainly carried this by* ``T``,
+    and one dated document settles that alone. An undated one can only mean the true first
+    appearance is earlier, so passing over it cannot admit a value the thread did not have.
+
+    Every ``review`` document in the corpus is undated -- GitHub dates a review with
+    ``submitted_at`` -- so the stricter reading would take 3% of ``thread_files`` out of
+    every cutoff for no soundness at all.
+    """
+    signals = _dated(("src/mod.py is wrong", None), ("still src/mod.py", "2026-01-01"))
+
+    assert [row["first_seen_at"] for row in signals.files] == [_at("2026-01-01")]
+
+
+def test_a_row_no_dated_document_produced_is_undated() -> None:
+    """And there the fail-closed direction does apply: nothing is known, so the ``<``
+    comparison drops it."""
+    signals = _dated(("src/mod.py is wrong", None))
+
+    assert [row["first_seen_at"] for row in signals.files] == [None]
+
+
+def test_every_kind_of_signal_carries_a_date() -> None:
+    signals = _dated(
+        (
+            'File "src/mod.py", line 9, in forward\n'
+            "ValueError: bad 3 shapes\n"
+            "tests/test_mod.py::test_shapes fails",
+            "2026-01-01",
+        )
+    )
+    dates = {
+        row["first_seen_at"]
+        for rows in (signals.files, signals.symbols, signals.errors, signals.tests)
+        for row in rows
+    }
+
+    assert signals.total > 3
+    assert dates == {_at("2026-01-01")}
+
+
+def test_the_changed_file_list_is_dated_by_the_merge() -> None:
+    """Nothing in the per-PR node carries a date, and fetching one would make a re-derive
+    a network operation. The merge is the one instant the list is known to have been
+    final."""
+    detail = {"files": {"nodes": [{"path": "src/mod.py", "changeType": "ADDED"}]}}
+
+    rows = _dated(
+        ("no paths in this body", "2026-01-01"), detail=detail, merged_at=_at("2026-06-01")
+    ).files
+
+    assert [(row["source"], row["first_seen_at"]) for row in rows] == [
+        ("changed", _at("2026-06-01"))
+    ]
+
+
+def test_an_unmerged_pull_request_leaves_its_diff_undated() -> None:
+    """It had some prefix of this list at any earlier instant and nothing can reconstruct
+    which, so the row fails closed rather than claiming the whole diff."""
+    detail = {"files": {"nodes": [{"path": "src/mod.py", "changeType": "ADDED"}]}}
+
+    rows = _dated(("no paths in this body", "2026-01-01"), detail=detail).files
+
+    assert [row["first_seen_at"] for row in rows] == [None]
+
+
+def test_a_path_both_written_and_diffed_is_dated_by_the_writing() -> None:
+    """The row is one row -- the changed-file list overwrites its ``change_type`` and its
+    ``source`` -- but the thread did carry that path from the moment somebody typed it, so
+    the date is the earlier of the two and not the merge."""
+    detail = {"files": {"nodes": [{"path": "src/mod.py", "changeType": "ADDED"}]}}
+
+    rows = _dated(
+        ("touches src/mod.py", "2026-01-01"), detail=detail, merged_at=_at("2026-06-01")
+    ).files
+
+    assert [(row["source"], row["first_seen_at"]) for row in rows] == [
+        ("changed", _at("2026-01-01"))
+    ]
+
+
+def test_commits_are_dated_by_the_merge_too() -> None:
+    detail = {"commits": {"nodes": [{"commit": {"oid": "abc1234", "messageHeadline": "fix it"}}]}}
+
+    rows = _dated(("an opening", "2026-01-01"), detail=detail, merged_at=_at("2026-06-01")).commits
+
+    assert [row["first_seen_at"] for row in rows] == [_at("2026-06-01")]
