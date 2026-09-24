@@ -43,6 +43,7 @@ from sqlalchemy import (
 )
 
 from relore.ingest.extract import CHANGED, FROM_COMMENT, MENTIONED
+from relore.ingest.timestamps import EDITABLE_PER_OBJECT
 from relore.search.queries import (
     AFTER_CURSOR,
     BODY_SLACK_CHARS,
@@ -98,16 +99,6 @@ class _Comments(NamedTuple):
     comment_status: str = ""
 
 
-#: Document types whose ``github_updated_at`` GitHub defines **per object**, so a later
-#: value is evidence the text itself changed. A thread's ``title`` and ``body`` carry the
-#: issue's own ``updated_at`` instead, which any activity bumps -- a new comment, a label, a
-#: close. Measured on a `huggingface/transformers` sample: 99.6% of bodies and titles carry a
-#: timestamp later than their creation, against 8.7% of issue comments. Applying the rule
-#: below to those would drop about 5% of a corpus, including the opening statement of every
-#: active thread, to catch almost nothing.
-EDITABLE_PER_OBJECT = ("issue_comment", "review_comment")
-
-
 def written_before(before: dt.datetime | None) -> tuple[Any, ...]:
     """Section 13's cutoff over ``documents``, as predicates to splat into a ``where``.
 
@@ -136,6 +127,31 @@ def written_before(before: dt.datetime | None) -> tuple[Any, ...]:
             s.documents.c.github_updated_at < before,
         ),
     )
+
+
+def carried_before(table: Any, before: dt.datetime | None) -> tuple[Any, ...]:
+    """Section 13's cutoff over one signal table: *did this thread carry this value at* ``T``.
+
+    The companion to :func:`written_before`, and the half a document predicate cannot
+    reach. A path or a symbol is attributed to the thread rather than to the comment it
+    was read out of, so without a date on the row a value first named after the cutoff
+    selects and scores that thread's pre-cutoff documents -- a match an as-of-``T``
+    deployment could not have made (temporal-cutoff-map.md section 8).
+
+    Fails closed the same three ways. A NULL ``first_seen_at`` compares NULL rather than
+    TRUE, so a row from an index that predates the column, or one whose contributing
+    documents were undated, is dropped; ``<`` is exclusive at the instant; and no cutoff
+    means no predicate, so production ranking is untouched and bit-identical.
+
+    ``thread_labels`` has no such column and is passed through unbounded, which is a
+    declared gap rather than an oversight: a label carries no date in any payload this
+    project stores, so a bound on it would have to be invented rather than derived. It is
+    the one signal ``_filters`` can still select by out of time, and it is the weakest --
+    a label is a word from a fixed vocabulary, not evidence about a fix.
+    """
+    if before is None or "first_seen_at" not in table.c:
+        return ()
+    return (table.c.first_seen_at < before,)
 
 
 def _opened_before(before: dt.datetime | None) -> tuple[Any, ...]:
@@ -402,19 +418,31 @@ class SearchBackend(ABC):
         candidates = {
             "error": (
                 WEIGHTS.error,
-                self._overlap(s.thread_errors, s.thread_errors.c.message_norm, spec.errors, True),
+                self._overlap(
+                    s.thread_errors,
+                    s.thread_errors.c.message_norm,
+                    spec.errors,
+                    True,
+                    before=query.before,
+                ),
             ),
             "test": (
                 WEIGHTS.test,
-                self._overlap(s.thread_tests, s.thread_tests.c.test_id, spec.tests),
+                self._overlap(
+                    s.thread_tests, s.thread_tests.c.test_id, spec.tests, before=query.before
+                ),
             ),
             "symbol": (
                 WEIGHTS.symbol,
-                self._overlap(s.thread_symbols, s.thread_symbols.c.symbol, spec.symbols),
+                self._overlap(
+                    s.thread_symbols, s.thread_symbols.c.symbol, spec.symbols, before=query.before
+                ),
             ),
             "file": (
                 WEIGHTS.file,
-                self._overlap(s.thread_files, s.thread_files.c.path, spec.files),
+                self._overlap(
+                    s.thread_files, s.thread_files.c.path, spec.files, before=query.before
+                ),
             ),
             "lexical": (WEIGHTS.lexical, self._lexical(query, spec)),
         }
@@ -441,9 +469,15 @@ class SearchBackend(ABC):
         return total if decay is None else total * decay
 
     def _overlap(
-        self, table: Any, column: Any, values: tuple[str, ...], fuzzy: bool = False
+        self,
+        table: Any,
+        column: Any,
+        values: tuple[str, ...],
+        fuzzy: bool = False,
+        *,
+        before: dt.datetime | None = None,
     ) -> Any | None:
-        """How much of what was asked this thread carries, in ``[0, 1]``.
+        """How much of what was asked this thread carries *at* ``before``, in ``[0, 1]``.
 
         A *fraction* rather than a count, so the term is comparable across questions of
         different sizes: a thread matching both of two requested files should not outrank
@@ -451,13 +485,24 @@ class SearchBackend(ABC):
         filter uses** (:meth:`_thread_has`), which is not tidiness -- section 13.2 #3
         records what happens when the two sides of a term disagree about normal form, and
         sharing the predicate makes disagreeing impossible.
+
+        That sharing is what carries the cutoff here for free. A thread selected on a path
+        it had at ``T`` used to be *scored* on every path it ever acquired, so the term a
+        cutoff could not reach was the one C4 is distinguished by; ``before`` reaching
+        :meth:`_thread_has` closes both at once.
         """
         if not values:
             return None
         matched = reduce(
             operator.add,
             (
-                case((self._thread_has(table, column, (value,), fuzzy=fuzzy), 1.0), else_=0.0)
+                case(
+                    (
+                        self._thread_has(table, column, (value,), fuzzy=fuzzy, before=before),
+                        1.0,
+                    ),
+                    else_=0.0,
+                )
                 for value in values
             ),
         )
@@ -541,23 +586,36 @@ class SearchBackend(ABC):
         # because a filter written later against a populated table is a filter nobody
         # tested empty -- but until that pass runs they correctly match nothing.
         if query.files and include_files:
-            where.append(self._thread_has_path(query.files))
+            where.append(self._thread_has_path(query.files, query.before))
         if query.symbols:
             where.append(
-                self._thread_has(s.thread_symbols, s.thread_symbols.c.symbol, query.symbols)
+                self._thread_has(
+                    s.thread_symbols,
+                    s.thread_symbols.c.symbol,
+                    query.symbols,
+                    before=query.before,
+                )
             )
         if query.errors:
             where.append(
                 self._thread_has(
-                    s.thread_errors, s.thread_errors.c.message_norm, query.errors, fuzzy=True
+                    s.thread_errors,
+                    s.thread_errors.c.message_norm,
+                    query.errors,
+                    fuzzy=True,
+                    before=query.before,
                 )
             )
         if query.tests:
-            where.append(self._thread_has(s.thread_tests, s.thread_tests.c.test_id, query.tests))
+            where.append(
+                self._thread_has(
+                    s.thread_tests, s.thread_tests.c.test_id, query.tests, before=query.before
+                )
+            )
         return where
 
     @staticmethod
-    def _thread_has_path(values: tuple[str, ...]) -> Any:
+    def _thread_has_path(values: tuple[str, ...], before: dt.datetime | None = None) -> Any:
         """``--file``, matched exactly *or* on a path-segment boundary.
 
         ``thread_files`` holds diff entries under their repository-root path and prose
@@ -579,12 +637,21 @@ class SearchBackend(ABC):
         if not clauses:
             return literal(False)
         return exists().where(
-            and_(s.thread_files.c.thread_id == s.documents.c.thread_id, or_(*clauses))
+            and_(
+                s.thread_files.c.thread_id == s.documents.c.thread_id,
+                or_(*clauses),
+                *carried_before(s.thread_files, before),
+            )
         )
 
     @staticmethod
     def _thread_has(
-        table: Any, column: Any, values: tuple[str, ...], *, fuzzy: bool = False
+        table: Any,
+        column: Any,
+        values: tuple[str, ...],
+        *,
+        fuzzy: bool = False,
+        before: dt.datetime | None = None,
     ) -> Any:
         """``EXISTS`` against a signal table, as OR across the requested values.
 
@@ -593,12 +660,25 @@ class SearchBackend(ABC):
         independently of it. ``fuzzy`` is a ``LIKE`` containment test, used for error
         strings where the caller pastes more than the indexed normalized form -- it is not
         the trigram tier, which is Postgres-only and lands with the ranking work.
+
+        ``before`` bounds the row through :func:`carried_before`, and this method is where
+        it belongs rather than at either call site, because it is the predicate *both*
+        sides share: :meth:`_filters` selects with it and :meth:`_overlap` scores with it.
+        Section 13.2 #3 records what happens when the two disagree, and the filtering half
+        of this cutoff having been fixed without the ranking half is that entry's most
+        recent instance.
         """
         if fuzzy:
             match = or_(*[column.like(f"%{value}%") for value in values])
         else:
             match = column.in_(values)
-        return exists().where(and_(table.c.thread_id == s.documents.c.thread_id, match))
+        return exists().where(
+            and_(
+                table.c.thread_id == s.documents.c.thread_id,
+                match,
+                *carried_before(table, before),
+            )
+        )
 
     def _hit(self, row: Any, query: SearchQuery) -> Hit:
         return Hit(

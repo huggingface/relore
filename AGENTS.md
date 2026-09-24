@@ -388,7 +388,7 @@ RELORE_API=http://localhost:8080 relore search "some error text"
 | `relore/api/` | `server.py` (routes + the response scrub), `tokens.py` (scope and limits), `schemas.py`, `ui.py` (the §8 page) |
 | `relore/code/` | the lens, in **both** binaries; `providers/` is one module per language, `registry.py` the entry-point seam |
 | `relore/security/` | untrusted-content envelope, secret redaction |
-| `relore/bench/` | §10's benchmark: `dataset.py` the frozen set, `mine.py` the candidates, `judge.py` the label fold, `run.py` the runner and the two baselines, `corpus.py` §13's pre-cutoff export and the signal-table post-filter |
+| `relore/bench/` | §10's benchmark: `dataset.py` the frozen set, `mine.py` the candidates, `judge.py` the label fold, `run.py` the runner and the two baselines, `corpus.py` §13's pre-cutoff export and the signal-table post-filter (now a cross-check on `first_seen_at`) |
 | `relore/render.py` | dicts in, text out. **One renderer**, shared by the CLI and the UI's raw view — stdlib only, which is what lets it sit on both sides of the boundary |
 | `relore/guidance.py` | the prose that describes the verbs. **One owner**, rendered into `--help` and the page, and the source of the verb list `tests/unit/test_prose_surfaces.py` holds `docs/cli.md` and the skill to. Text and a lazy parser read, nothing else |
 | `relore/cli.py` | the client. Imports none of the above except `code`, `render` and `security` |

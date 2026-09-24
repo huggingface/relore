@@ -63,10 +63,43 @@ def test_the_file_provenance_column_lands_on_a_database_that_predates_it(
         conn.execute(select(s.thread_files.c.source))
 
 
+def test_the_first_seen_at_columns_land_on_a_database_that_predates_them(
+    engine: Engine,
+) -> None:
+    """Step 8, same shape as step 7 and on five tables at once (temporal-cutoff-map.md 8).
+
+    Deliberately no backfill: the value is derived, so the next ``relored derive`` fills it
+    from ``raw_objects`` with no network. Until then it is null, and a null fails closed --
+    an unbounded query is unaffected and a bounded one drops the row rather than admitting
+    it, which is the safe direction for a migration whose purpose is to stop over-admitting.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE thread_symbols"))
+        conn.execute(
+            text(
+                "CREATE TABLE thread_symbols (thread_id BIGINT, symbol TEXT, path TEXT, "
+                "symbol_type TEXT)"
+            )
+        )
+
+    _step(8)(engine)
+    _step(8)(engine)  # idempotent: the column is checked for, not assumed
+
+    with engine.connect() as conn:
+        assert conn.execute(select(s.thread_symbols.c.first_seen_at)).all() == []
+        # And a value written through it comes back aware, which is the whole reason the
+        # DDL renders `UTCDateTime` per dialect rather than hardcoding one spelling.
+        conn.execute(select(s.thread_files.c.first_seen_at))
+
+
 def _file_provenance_step():
-    """The step itself, run outside :func:`migrate` because the fixture has already
+    return _step(7)
+
+
+def _step(version: int):
+    """One migration step, run outside :func:`migrate` because the fixture has already
     recorded every version as applied."""
-    step = dict((version, function) for version, _name, function in MIGRATIONS)[7]
+    step = dict((v, function) for v, _name, function in MIGRATIONS)[version]
 
     def run(engine: Engine) -> None:
         with engine.begin() as conn:

@@ -149,13 +149,27 @@ class BackendMismatch(RuntimeError):
     """Section 10: a recall figure measured on ``bm25`` describes a different engine."""
 
 
-#: Printed and carried in the JSON of every report produced under a cutoff, so it travels
-#: with the number rather than with a reader's memory.
-RANKING_CAVEAT = (
-    "ordering is still inflated: the thread_* signal tables carry no timestamp, so "
-    "`_overlap` scored rows created after the cutoff. Filtering is corrected by the "
-    "post-filter; ranking is not, until those tables carry a first_seen_at"
-)
+def undated_caveat(counts: Mapping[str, int]) -> str:
+    """The one caveat a cutoff run can still need, stated only when it is true.
+
+    This replaces an unconditional note that said ordering was inflated because the
+    ``thread_*`` tables carried no timestamp. They carry one now and the query layer bounds
+    both selection and ``_overlap`` with it, so the note would be false on any derived
+    index -- and a caveat that is printed whether or not it applies is one a reader learns
+    to skip past, which is worse than not printing it.
+
+    What can still be true is the backlog: a database migrated but not yet re-derived has
+    null dates, and a null fails closed, so a bounded run on it is *strict* rather than
+    inflated and its recall is a measurement of the backlog. That is a fact about one
+    database at one moment, so it is counted (:func:`relore.bench.corpus.undated_signals`)
+    rather than asserted.
+    """
+    rows = ", ".join(f"{name} {count}" for name, count in sorted(counts.items()))
+    return (
+        f"this index has signal rows with no first_seen_at ({rows}); a cutoff drops them "
+        "rather than admitting them, so recall below is a floor. `relored derive` fills "
+        "them in, offline"
+    )
 
 
 @dataclass
@@ -165,6 +179,9 @@ class Report:
     runs: list[Run] = field(default_factory=list)
     #: ``{"before": …, "exclude": [...]}`` when this is a temporal run, else ``None``.
     cutoff: dict[str, Any] | None = None
+    #: Stated by the caller, because every one of them is a measurement rather than a
+    #: property of this class (see :func:`undated_caveat`).
+    caveats: tuple[str, ...] = ()
 
     def add(self, run: Run) -> None:
         if run.backend is not None and run.backend != self.backend:
@@ -203,7 +220,7 @@ class Report:
         }
         if self.cutoff is not None:
             out["cutoff"] = self.cutoff
-            out["caveats"] = [RANKING_CAVEAT]
+            out["caveats"] = list(self.caveats)
         return out
 
 

@@ -328,3 +328,44 @@ def test_only_judged_examples_reach_the_score(engine: Engine, fake: FakeGitHub) 
 
     assert [r.example_id for r in run.results] == ["judged"]
     assert run.backend is not None
+
+
+# -- the caveat that is counted rather than asserted ------------------------
+
+
+def test_a_report_under_a_cutoff_carries_no_caveat_it_cannot_support() -> None:
+    """The note this replaces was printed on every cutoff run and said ordering was
+    inflated. It is not, now that the signal tables carry dates and ``_overlap`` reads
+    them -- and a caveat printed whether or not it holds is one a reader learns to skip."""
+    report = br.Report(backend={"name": "x", "ranking": "y"}, cutoff={"before": "T", "exclude": []})
+
+    assert report.as_dict()["caveats"] == []
+
+
+def test_an_index_with_undated_signals_says_so_and_says_how_many() -> None:
+    """What can still be true: migrated, not yet re-derived. A null date fails closed, so
+    the run is strict rather than inflated and its recall is a floor -- which is a fact
+    about one database at one moment, so it is counted."""
+    caveat = br.undated_caveat({"thread_files": 12, "thread_symbols": 3})
+
+    assert "thread_files 12" in caveat and "thread_symbols 3" in caveat
+    assert "floor" in caveat
+    assert "relored derive" in caveat
+
+
+def test_undated_signals_counts_only_what_has_no_date(engine: Engine, fake: FakeGitHub) -> None:
+    from sqlalchemy import update
+
+    from relore.bench.corpus import undated_signals
+    from relore.store import schema as s
+
+    fake.add_pr(1, body="an opening naming src/mod.py")
+    with fake.client() as client:
+        index_thread(engine, client, REPO, 1)
+
+    assert undated_signals(engine) == {}, "a freshly derived index has a date on every row"
+
+    with engine.begin() as conn:
+        conn.execute(update(s.thread_files).values(first_seen_at=None))
+
+    assert undated_signals(engine) == {"thread_files": 1}

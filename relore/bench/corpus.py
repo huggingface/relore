@@ -7,15 +7,22 @@ are one module.
 the rows come out under :func:`relore.search.backends.base.corpus_scope`, the predicate
 ``_filters`` itself applies, rather than a second copy of it.
 
-**The post-filter.** The five ``thread_*`` tables carry only ``thread_id`` and a value
-(section 4): no timestamp. So a path first named after ``T`` is attributed to the whole
-thread, and ``--file X --before T`` selects that thread's pre-cutoff documents on evidence
-that did not exist yet. :class:`SignalPostFilter` re-derives each hit thread's signals from
-the documents it had by ``T`` and drops what the index could not have selected.
+**The post-filter.** The five ``thread_*`` tables used to carry only ``thread_id`` and a
+value (section 4): no timestamp. So a path first named after ``T`` was attributed to the
+whole thread, and ``--file X --before T`` selected that thread's pre-cutoff documents on
+evidence that did not exist yet. :class:`SignalPostFilter` re-derives each hit thread's
+signals from the documents it had by ``T`` and drops what the index could not have
+selected.
 
-It fixes filtering only. ``_overlap`` has already scored the same timeless rows, so
-ordering stays inflated until those tables carry a ``first_seen_at``; any number from a
-post-filtered run has to say so.
+Those tables now carry ``first_seen_at`` and the query layer bounds them itself
+(:func:`relore.search.backends.base.carried_before`), which fixes the ranking half the
+post-filter structurally could not: it runs after ``_overlap`` has already scored. So this
+class is no longer the mitigation -- it is the **cross-check** on the one that replaced it,
+and it is worth keeping for exactly that. It arrives at the same answer by a different
+road, re-deriving from text rather than reading a stored date, so
+:meth:`SignalPostFilter.dropped` returning anything on a derived index means the column and
+the extractor disagree. On a stale index -- migrated but not yet re-derived -- it will drop
+nothing either, because a null date already fails closed in the query.
 
 Two ceilings, both erring towards dropping a hit rather than admitting a future document:
 
@@ -37,7 +44,7 @@ from itertools import groupby
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Connection, Engine, and_, or_, select
+from sqlalchemy import Connection, Engine, and_, func, or_, select
 
 from relore.ingest.extract import CHANGED, extract_signals
 from relore.search.backends.base import corpus_scope, written_before
@@ -50,8 +57,6 @@ EXPORT_VERSION = 1
 #: What this corpus is still wrong about, carried in the header so a reader need not come
 #: here for it.
 KNOWN_LIMITS = (
-    "signal-table-ranking: `_overlap` scores thread_* rows that carry no timestamp, so a "
-    "run's ordering is inflated until those tables carry a first_seen_at",
     "edited-bodies: documents.body_markdown holds the current text, so a body edited "
     "after the cutoff is exported as edited",
     "rendered-age: relore renders a hit's age from the wall clock, not from the cutoff",
@@ -60,6 +65,32 @@ KNOWN_LIMITS = (
 #: The export's order and a row's identity. Not ``documents.id``, which a rebuild
 #: reassigns: this is ``documents_identity_uq`` with the thread named the way a human does.
 IDENTITY = ("repo", "number", "source_type", "source_id", "chunk_index")
+
+
+#: The tables :func:`relore.search.backends.base.carried_before` reads a date from.
+_DATED_SIGNALS = (s.thread_files, s.thread_symbols, s.thread_errors, s.thread_tests)
+
+
+def undated_signals(engine: Engine) -> dict[str, int]:
+    """Signal rows with no ``first_seen_at``, per table, for the tables a cutoff reads.
+
+    A migrated-but-not-re-derived index is not *wrong* under a cutoff -- a null date fails
+    closed, so the rows are dropped rather than admitted -- but it is silently strict, and
+    a recall figure measured on it is measuring the backlog rather than the retrieval. The
+    number is reported rather than the state guessed at, which is the same move section 9
+    of the map asks for: ``relored bench`` says how many rows have no date instead of
+    asserting that ordering is or is not inflated.
+    """
+    with engine.connect() as conn:
+        counts = {
+            table.name: int(
+                conn.execute(
+                    select(func.count()).select_from(table).where(table.c.first_seen_at.is_(None))
+                ).scalar_one()
+            )
+            for table in _DATED_SIGNALS
+        }
+    return {name: count for name, count in counts.items() if count}
 
 
 # -- the export ------------------------------------------------------------

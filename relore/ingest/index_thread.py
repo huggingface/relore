@@ -23,7 +23,7 @@ from relore.ingest.chunk import chunk, content_hash
 from relore.ingest.extract import extract_signals
 from relore.ingest.normalize import normalize, redact
 from relore.ingest.relationships import extract_links
-from relore.ingest.timestamps import parse_timestamp
+from relore.ingest.timestamps import parse_timestamp, text_existed_at
 from relore.ingest.versions import CHUNKING_VERSION, EXTRACTOR_VERSION
 from relore.store import repository as repo_layer
 from relore.store.dialect import utcnow
@@ -130,7 +130,7 @@ def derive_thread(
     # Section 5.3, in the same transaction as the documents it was extracted from: a
     # thread whose signals belong to a body it no longer has is worse than one with no
     # signals, because the `--file`/`--error` filters would answer from it.
-    rows = extract_signals(sources, detail=detail).rows()
+    rows = extract_signals(sources, detail=detail, merged_at=thread_row["merged_at"]).rows()
     # Section 13.3: the claim comes from this thread alone, the resolution from the index.
     # A target nobody has indexed yet is stored unresolved rather than dropped -- an open
     # pull request closing an unindexed issue is the *normal* case on a sampled index, and
@@ -364,7 +364,22 @@ def build_documents(
         clean, found = redact(body or "")
         redactions.update(found)
         # Before `chunk`, on purpose: see this function's docstring.
-        sources.append({"body_markdown": clean, "metadata": metadata or {}})
+        #
+        # `existed_at` is what dates the signal rows read out of this text. It is computed
+        # here rather than in the extractor because the rule needs `source_type`, which is
+        # a fact about the GitHub object and stops being one by the time the extractor has
+        # a string.
+        sources.append(
+            {
+                "body_markdown": clean,
+                "metadata": metadata or {},
+                "existed_at": text_existed_at(
+                    source_type,
+                    parse_timestamp(raw_obj.get("created_at")),
+                    parse_timestamp(raw_obj.get("updated_at")),
+                ),
+            }
+        )
         author = raw_obj.get("user") or {}
         is_bot, trust = _trust(author, raw_obj.get("author_association"), authority)
         for piece in chunk(clean, split=split):

@@ -592,6 +592,7 @@ def _bench(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     from relore.bench import dataset as ds
+    from relore.bench.corpus import undated_signals
     from relore.bench.run import (
         GitHubSearchSystem,
         GrepSystem,
@@ -599,6 +600,7 @@ def _bench(args: argparse.Namespace) -> int:
         Report,
         run_system,
         threads_by_path,
+        undated_caveat,
     )
 
     wanted = tuple(args.systems) if args.systems else ("index", "github")
@@ -643,6 +645,10 @@ def _bench(args: argparse.Namespace) -> int:
 
     engine = _engine()
     index = IndexSystem(engine, repos, before=before, exclude=exclude)
+    # Counted once, before any run: a cutoff on an index whose signal rows have no date is
+    # strict rather than inflated, and the number says by how much (temporal-cutoff-map.md
+    # section 8). Only under a cutoff, because that is the only time the date is read.
+    undated = undated_signals(engine) if before is not None else {}
     report = Report(
         backend=index.backend.info().as_dict(),
         corpus=[c.__dict__ for c in data.corpus],
@@ -651,6 +657,7 @@ def _bench(args: argparse.Namespace) -> int:
             if (before is not None or exclude)
             else None
         ),
+        caveats=(undated_caveat(undated),) if undated else (),
     )
 
     for name in wanted:
@@ -720,11 +727,9 @@ def _bench(args: argparse.Namespace) -> int:
                 f"\nnote: {run.system} could not be restricted to the window; "
                 "section 10 says that is not a comparison"
             )
-    if report.cutoff is not None:
-        # Under the table: it is a caveat about the numbers above it, not a preamble.
-        from relore.bench.run import RANKING_CAVEAT
-
-        print(f"\nnote: {RANKING_CAVEAT}")
+    # Under the table: these are caveats about the numbers above them, not a preamble.
+    for caveat in report.caveats:
+        print(f"\nnote: {caveat}")
     return 0
 
 

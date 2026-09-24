@@ -111,28 +111,30 @@ def test_the_cutoff_holds_through_every_expansion_leg(engine: Engine, fake: Fake
     on all of them, and it does because a leg is a ``replace()`` of the caller's query --
     this is the test that keeps that true if a leg is ever built some other way.
 
-    What is asserted is that the future *document* is gone from every leg. The thread
-    itself is still reachable through its pre-cutoff body, which is the separate leak
-    :func:`test_a_thread_is_still_selected_by_evidence_that_did_not_exist_yet` covers.
+    Two threads say the same things at different times, because one of them is what keeps
+    this test honest: with only the future thread, every leg returning nothing would also
+    satisfy "no future document reached the caller", and a cutoff that empties the page is
+    trivially leak-free and useless. The older thread is what the legs must still find.
     """
-    pr = fake.add_pr(1, body="a report with nothing quotable in it")
-    fake.add_comment(
-        pr,
-        100,
+    evidence = (
         "ValueError: expected 768 features, got 1024\n"
         "`compute_default_rope_parameters` in `src/mod.py`\n"
-        "tests/test_mask.py::test_shapes fails",
-        created_at=AFTER,
+        "tests/test_mask.py::test_shapes fails"
     )
-    _index(engine, fake, 1)
+    old = fake.add_pr(1, body="an older report")
+    fake.add_comment(old, 100, evidence, created_at=BEFORE)
+    future = fake.add_pr(2, body="a report with nothing quotable in it")
+    fake.add_comment(future, 200, evidence, created_at=AFTER)
+    _index(engine, fake, 1, 2)
     question = (
         "ValueError: expected 768 features, got 1024 compute_default_rope_parameters "
         "src/mod.py tests/test_mask.py::test_shapes"
     )
 
-    assert any(h.source_type == "issue_comment" for h in _expanded(engine, text=question))
+    assert {h.number for h in _expanded(engine, text=question)} == {1, 2}
     hits = _expanded(engine, text=question, before=CUTOFF)
-    assert hits != []  # the legs still run; it is the future document they must not return
+
+    assert {h.number for h in hits} == {1}  # the legs still run, on what existed
     assert all(h.created_at < CUTOFF for h in hits)
 
 
@@ -149,23 +151,121 @@ def test_a_filter_cannot_return_a_future_document(engine: Engine, fake: FakeGitH
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the five thread_* signal tables carry no timestamp, so a path or symbol first "
-        "named after the cutoff is attributed to the whole thread and selects that "
-        "thread's pre-cutoff documents. No future *text* reaches the caller -- the leak "
-        "is in the selection, not the payload -- but a real as-of-T deployment could not "
-        "have made this match, so it inflates any condition that filters structurally. "
-        "Closed by a `first_seen_at` column on those tables (temporal-cutoff-map.md 8); "
-        "delete this marker when it lands."
-    ),
-)
-def test_a_thread_is_still_selected_by_evidence_that_did_not_exist_yet(
+# -- the signal tables (temporal-cutoff-map.md 8) --------------------------
+#
+# A signal row is attributed to the *thread*, not to the comment it was read out of, so
+# until those tables carried a date the cutoff could not reach them: a path first named
+# after `T` selected that thread's pre-cutoff documents. No future text reached the caller
+# -- the leak was in the selection, not the payload -- but an as-of-`T` deployment could
+# not have made the match, and `_overlap` scored the same rows, so it inflated every
+# condition that filters or ranks structurally. `first_seen_at` closes both halves.
+
+
+def test_a_thread_is_not_selected_by_evidence_that_did_not_exist_yet(
     engine: Engine, fake: FakeGitHub
 ) -> None:
     pr = fake.add_pr(1, body="an opening with no path in it")
     fake.add_review_comment(pr, 300, "this belongs upstream", path="src/mod.py", created_at=AFTER)
+    _index(engine, fake, 1)
+
+    assert _search(engine, files=("src/mod.py",), before=CUTOFF) == []
+
+
+def test_a_thread_is_still_selected_by_evidence_that_did_exist(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """The other half of the contract, and the one a fail-closed column can quietly break:
+    dropping every signal row would pass the test above too."""
+    pr = fake.add_pr(1, body="an opening with no path in it")
+    fake.add_review_comment(pr, 300, "this belongs upstream", path="src/mod.py", created_at=BEFORE)
+    _index(engine, fake, 1)
+
+    assert {h.number for h in _search(engine, files=("src/mod.py",), before=CUTOFF)} == {1}
+
+
+def test_a_symbol_first_named_after_the_cutoff_does_not_select(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    pr = fake.add_pr(1, body="an opening")
+    fake.add_comment(pr, 100, "the fix is in `rotary_embedding`", created_at=AFTER)
+    _index(engine, fake, 1)
+
+    assert _search(engine, symbols=("rotary_embedding",), before=CUTOFF) == []
+    assert _search(engine, symbols=("rotary_embedding",)) != []
+
+
+def test_a_test_id_first_named_after_the_cutoff_does_not_select(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    pr = fake.add_pr(1, body="an opening")
+    fake.add_comment(pr, 100, "tests/test_mask.py::test_shapes fails", created_at=AFTER)
+    _index(engine, fake, 1)
+
+    assert _search(engine, tests=("tests/test_mask.py::test_shapes",), before=CUTOFF) == []
+    assert _search(engine, tests=("tests/test_mask.py::test_shapes",)) != []
+
+
+def test_an_error_first_pasted_after_the_cutoff_does_not_select(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """The fuzzy leg. ``--error`` is a LIKE containment test rather than an ``IN``, so it
+    is a second predicate and would have to be bounded a second time if the bound lived at
+    the call site instead of inside ``_thread_has``."""
+    pr = fake.add_pr(1, body="an opening")
+    fake.add_comment(pr, 100, "ValueError: expected 768 features, got 1024", created_at=AFTER)
+    _index(engine, fake, 1)
+
+    assert _search(engine, errors=("expected <n> features",), before=CUTOFF) == []
+    assert _search(engine, errors=("expected <n> features",)) != []
+
+
+def test_a_future_signal_does_not_score_either(engine: Engine, fake: FakeGitHub) -> None:
+    """The half the bench post-filter structurally could not reach: it runs after
+    ``_overlap`` has already scored. Both threads are selected by their shared text, and
+    only the one that carried the path at ``T`` may be scored for carrying it."""
+    early = fake.add_pr(1, body="the rope marker, one")
+    fake.add_review_comment(early, 300, "here", path="src/mod.py", created_at=BEFORE)
+    late = fake.add_pr(2, body="the rope marker, two")
+    fake.add_review_comment(late, 301, "here", path="src/mod.py", created_at=AFTER)
+    _index(engine, fake, 1, 2)
+
+    scored = {
+        h.number: h.breakdown.get("file")
+        for h in _search(engine, text="rope marker", files=("src/mod.py",), before=CUTOFF)
+    }
+    unbounded = {
+        h.number: h.breakdown.get("file")
+        for h in _search(engine, text="rope marker", files=("src/mod.py",))
+    }
+
+    assert scored == {1: 1.0}
+    assert unbounded == {1: 1.0, 2: 1.0}
+
+
+def test_a_signal_row_with_no_date_is_dropped_rather_than_admitted(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """An index migrated but not yet re-derived. Null is "we do not know when this
+    appeared", which must not read as "it was always there" -- the same direction the NULL
+    ``github_created_at`` rule takes, and the reason the migration needs no backfill."""
+    pr = fake.add_pr(1, body="an opening with no path in it")
+    fake.add_review_comment(pr, 300, "this belongs upstream", path="src/mod.py", created_at=BEFORE)
+    _index(engine, fake, 1)
+    with engine.begin() as conn:
+        conn.execute(update(s.thread_files).values(first_seen_at=None))
+
+    assert _search(engine, files=("src/mod.py",), before=CUTOFF) == []
+    assert _search(engine, files=("src/mod.py",)) != []  # and an unbounded query is untouched
+
+
+def test_a_path_from_a_comment_edited_after_the_cutoff_is_not_carried(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """``documents.body_markdown`` holds the *current* text, so a signal read out of an
+    edited comment dates from the edit. The same rule ``written_before`` applies to the
+    document, applied to the row the document predicate cannot reach."""
+    pr = fake.add_pr(1, body="an opening with no path in it")
+    fake.add_comment(pr, 100, "it is src/mod.py after all", created_at=BEFORE, updated_at=AFTER)
     _index(engine, fake, 1)
 
     assert _search(engine, files=("src/mod.py",), before=CUTOFF) == []

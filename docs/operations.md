@@ -165,10 +165,16 @@ The timestamp must carry a zone; a naive one is refused at the flag. `github` an
 answer from outside this index and cannot be held to a cutoff, so asking for either
 alongside one is refused — score them in a separate, untimed run.
 
-The report prints how many hits the signal-table post-filter dropped, and what it does not
-fix: the five `thread_*` tables carry no timestamp, so §6's overlap terms scored rows
-written after the cutoff. **Filtering is corrected; ordering is not** until those tables
-carry a `first_seen_at`. That belongs beside any number such a run produced.
+The five `thread_*` tables carry a `first_seen_at` — the earliest instant the thread is
+known to have carried that value — and the cutoff reads it, so a path or a symbol first
+named after `T` neither selects a thread nor scores for it. The bench post-filter still
+runs and is now a cross-check rather than a mitigation: it re-derives the same answer from
+the documents, so anything it drops means the column and the extractor disagree.
+
+`first_seen_at` is **derived, and not backfilled by the migration**. A database migrated
+but not yet re-derived has null dates, and a null fails closed — the run is strict rather
+than inflated, and its recall is a floor. The report counts those rows and says so; a
+`relored derive` fills them in, offline.
 
 ### The corpus a baseline reads
 
