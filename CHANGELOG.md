@@ -18,6 +18,10 @@ The client and daemon must run the same version.
   review comments GitHub stops serving are kept rather than pruned. The stall held the
   checkpoint, so every pass re-read the window behind it and spent the token's hourly
   budget.
+- A thread that fails on every pass still holds the poll's checkpoint, but no longer
+  makes each pass re-fetch the window behind it: a thread already held at the listing's
+  `updated_at` is skipped. Threads with new review comments are still fetched. The poll
+  summary reports the skipped threads as `current`.
 
 ## [0.3.17] - 2026-09-18
 

@@ -202,6 +202,65 @@ def test_reviews_github_stops_serving_are_kept_not_pruned(engine: Engine, fake: 
     assert kept == "please split this"
 
 
+def _always_failing(monkeypatch: pytest.MonkeyPatch, bad: int) -> list[int]:
+    """Make thread ``bad`` fail every fetch; return the numbers every fetch was asked for."""
+    real = poll_mod.fetch_thread
+    asked: list[int] = []
+
+    def fetch(client, repo, number):
+        asked.append(number)
+        if number == bad:
+            raise RuntimeError("boom, every time")
+        return real(client, repo, number)
+
+    monkeypatch.setattr(poll_mod, "fetch_thread", fetch)
+    return asked
+
+
+def test_a_thread_that_always_fails_holds_the_mark_but_costs_only_itself(
+    engine: Engine, fake: FakeGitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rule 2 holds the mark for good; the window behind it is re-listed, not re-fetched."""
+    fake.add_issue(1, updated_at="2026-01-01T00:00:00Z")
+    fake.add_issue(2, updated_at="2026-02-01T00:00:00Z")
+    fake.add_pr(3, updated_at="2026-03-01T00:00:00Z")
+    fake.add_issue(4, updated_at="2026-04-01T00:00:00Z")
+    asked = _always_failing(monkeypatch, 2)
+    _poll(engine, fake)
+
+    asked.clear()
+    second = _poll(engine, fake)
+
+    assert asked == [2], "only the failing thread is fetched again"
+    assert second.failed == [2] and second.skipped == 3
+    assert _mark(engine) == dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+
+    fake.threads[4].payload["updated_at"] = "2026-05-01T00:00:00Z"
+    asked.clear()
+    _poll(engine, fake)
+    assert asked == [2, 4], "a thread that moved behind the held mark is still re-read"
+
+
+def test_a_review_comment_behind_a_held_mark_is_still_fetched(
+    engine: Engine, fake: FakeGitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A review comment does not bump ``updated_at``, so "current" is not decided by it."""
+    fake.add_issue(1, updated_at="2026-01-01T00:00:00Z")
+    pr = fake.add_pr(2, updated_at="2026-02-01T00:00:00Z")
+    _always_failing(monkeypatch, 1)
+    _poll(engine, fake)
+
+    fake.add_review_comment(pr, 300, "rename this", created_at="2026-03-01T00:00:00Z")
+    result = _poll(engine, fake)
+
+    assert result.documents_written == 1
+    with engine.connect() as conn:
+        found = conn.execute(
+            select(s.documents.c.body_text).where(s.documents.c.source_type == "review_comment")
+        ).scalar_one()
+    assert found == "rename this"
+
+
 def test_a_thread_sharing_the_high_water_second_is_not_dropped(
     engine: Engine, fake: FakeGitHub
 ) -> None:
@@ -214,7 +273,7 @@ def test_a_thread_sharing_the_high_water_second_is_not_dropped(
     result = _poll(engine, fake)
 
     assert 2 in set(_indexed_numbers(engine))
-    assert result.indexed == 2, "re-reading #1 is free, and that is what buys the overlap"
+    assert (result.indexed, result.skipped) == (1, 1), "the overlap re-lists #1; it is current"
 
 
 def test_a_capped_walk_still_makes_progress(engine: Engine, fake: FakeGitHub) -> None:

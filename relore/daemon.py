@@ -500,7 +500,7 @@ def _poll(args: argparse.Namespace) -> int:
         if args.once:
             result = poll_once(engine, client, args.repo)
             print(
-                f"{result.moved} moved, {result.indexed} indexed, "
+                f"{result.moved} moved, {result.skipped} current, {result.indexed} indexed, "
                 f"{result.documents_written} document writes"
             )
             return 0 if result.clean else 1

@@ -13,6 +13,12 @@ complexity.
 2. **The checkpoint stops at the first failure.** Threads arrive ascending, so advancing
    past a failed one would skip it forever -- and the pass would still report success.
    Later threads are still indexed (that is idempotent and useful); only the mark waits.
+   A thread that fails on every pass holds the mark for good, so the window behind it
+   is re-listed each pass -- and only re-listed: a thread already held at the listing's
+   ``updated_at`` is not re-fetched. Without that, one stuck trl thread re-read 184
+   threads every 5 minutes, about 900 requests a pass, and spent the token's hourly
+   budget. Threads the review-comment walk surfaces are always fetched, because a
+   review comment does not reliably bump ``updated_at``.
 3. **A capped walk bounds how far the mark may move.** The two list queries are ordered
    differently, so the uncapped one can surface a thread far newer than anything the
    capped one reached. Indexing it is fine; letting it drag the checkpoint over the
@@ -62,6 +68,9 @@ class Discovery:
     thread's real ``updated_at`` -- so it sorts conservatively early, never late.
     """
 
+    commented: set[int] = field(default_factory=set)
+    """Threads the review-comment walk surfaced: fetched even when ``updated_at`` stood still."""
+
     capped: bool = False
     """GitHub refused deeper pagination: ``candidates`` is a prefix of what moved."""
 
@@ -74,6 +83,8 @@ class PollResult:
     repo: str
     since: dt.datetime | None
     moved: int = 0
+    #: Moved threads already held at the listing's ``updated_at``, so not re-fetched.
+    skipped: int = 0
     indexed: int = 0
     documents_written: int = 0
     #: Section 5.3's rows. Counted separately from documents, and reported here rather
@@ -132,6 +143,7 @@ def discover_moved(client: GitHubClient, repo: str, since: dt.datetime | None) -
         if number is None:
             continue
         found.candidates.setdefault(number, str(comment.get("created_at") or ""))
+        found.commented.add(number)
 
     return found
 
@@ -145,6 +157,10 @@ def poll_once(
 ) -> PollResult:
     with engine.connect() as conn:
         mark = since or repo_layer.high_water(conn, repo, PASS)
+        current = {
+            **repo_layer.thread_freshness(conn, repo, "issue"),
+            **repo_layer.thread_freshness(conn, repo, "pr"),
+        }
     window = mark - OVERLAP if mark else None
     if window is None:
         log.info("%s: no high-water mark yet, walking from the start", repo)
@@ -154,7 +170,15 @@ def poll_once(
     bound = parse_timestamp(found.safe_bound) if found.safe_bound else None
     blocked = False
 
-    for number, _key in sorted(found.candidates.items(), key=lambda kv: (kv[1], kv[0])):
+    for number, key in sorted(found.candidates.items(), key=lambda kv: (kv[1], kv[0])):
+        stamp = parse_timestamp(key)
+        if number not in found.commented and stamp is not None and current.get(number) == stamp:
+            # Rule 2's held mark, kept cheap: an unmoved `updated_at` means nothing to read.
+            result.skipped += 1
+            if may_advance(stamp, blocked=blocked, bound=bound):
+                with engine.begin() as conn:
+                    repo_layer.advance_high_water(conn, repo, PASS, stamp)
+            continue
         try:
             # Network outside the transaction; the commit and the checkpoint inside it.
             payload = fetch_thread(client, repo, number)
@@ -214,9 +238,10 @@ def poll_forever(
         results.append(poll_once(engine, client, repo))
         result = results[-1]
         log.info(
-            "%s: %d moved, %d indexed, %d document writes, %d signal writes%s",
+            "%s: %d moved, %d current, %d indexed, %d document writes, %d signal writes%s",
             repo,
             result.moved,
+            result.skipped,
             result.indexed,
             result.documents_written,
             result.signals_written,
