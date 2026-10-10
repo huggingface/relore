@@ -87,13 +87,14 @@ def index_payload(conn: Connection, payload: ThreadPayload) -> IndexResult:
     )
     # The fetch is the authority on what this thread currently contains, so anything
     # staged and not returned has been deleted on GitHub. Prune before deriving, or the
-    # derive faithfully rebuilds a document for a comment that no longer exists.
+    # derive faithfully rebuilds a document for a comment that no longer exists. A kind
+    # the fetch could not read says nothing about deletion, so it is not pruned.
     pruned = repo_layer.prune_raw(
         conn,
         payload.repo,
         payload.number,
         keep={(object_type, object_id) for object_type, object_id, _raw in objects},
-        object_types=AUTHORITATIVE_TYPES,
+        object_types=tuple(t for t in AUTHORITATIVE_TYPES if t not in payload.unread),
     )
     result = derive_thread(conn, payload.repo, payload.number)
     result.raw_pruned = pruned

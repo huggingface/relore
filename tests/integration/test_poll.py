@@ -158,6 +158,50 @@ def test_the_checkpoint_stops_at_the_first_failure(
     assert _mark(engine) == dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc)
 
 
+def test_a_pull_request_gone_from_pulls_does_not_hold_the_mark(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """huggingface/trl#7121: listed as a PR by ``/issues``, 404 under ``/pulls``.
+
+    The 404 is permanent. Failing the thread on it held the mark there, and every 5-minute
+    pass re-read the 184 threads behind it, about 900 requests a pass, until the token's
+    hourly budget ran out. The thread is indexed from ``/issues`` instead.
+    """
+    gone = fake.add_pr(1, updated_at="2026-01-01T00:00:00Z")
+    gone.pulls_gone = {"", "reviews"}
+    fake.add_review_comment(gone, 300, "still served", created_at="2026-01-01T00:00:00Z")
+    fake.add_issue(2, updated_at="2026-02-01T00:00:00Z")
+
+    result = _poll(engine, fake)
+
+    assert result.clean
+    assert set(_indexed_numbers(engine)) == {1, 2}
+    assert _mark(engine) == dt.datetime(2026, 2, 1, tzinfo=dt.timezone.utc)
+    with engine.connect() as conn:
+        found = conn.execute(
+            select(s.documents.c.body_text).where(s.documents.c.source_type == "review_comment")
+        ).scalar_one()
+    assert found == "still served"
+
+
+def test_reviews_github_stops_serving_are_kept_not_pruned(engine: Engine, fake: FakeGitHub) -> None:
+    """A 404 says the endpoint is gone, not that the reviews were deleted."""
+    pr = fake.add_pr(1, updated_at="2026-01-01T00:00:00Z")
+    fake.add_review(pr, 500, "please split this", submitted_at="2026-01-01T00:00:00Z")
+    _poll(engine, fake)
+
+    pr.pulls_gone = {"", "reviews"}
+    pr.payload["updated_at"] = "2026-02-01T00:00:00Z"
+    result = _poll(engine, fake)
+
+    assert result.clean
+    with engine.connect() as conn:
+        kept = conn.execute(
+            select(s.documents.c.body_text).where(s.documents.c.source_type == "review")
+        ).scalar_one()
+    assert kept == "please split this"
+
+
 def test_a_thread_sharing_the_high_water_second_is_not_dropped(
     engine: Engine, fake: FakeGitHub
 ) -> None:

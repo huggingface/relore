@@ -48,6 +48,9 @@ class FakeThread:
     #: Issue numbers GitHub itself resolved from this PR's closing keywords (section 13.3).
     #: Served with their repository, because the real field can point at another one.
     closing_references: list[int] = field(default_factory=list)
+    #: ``/pulls/{n}`` tails that answer 404 although ``/issues/{n}`` lists a PR: "" for
+    #: the PR itself, "reviews", "comments". huggingface/trl#7121 lost "" and "reviews".
+    pulls_gone: set[str] = field(default_factory=set)
 
     @property
     def is_pr(self) -> bool:
@@ -243,6 +246,8 @@ class FakeGitHub:
             if thread is None:
                 return _json(404, {"message": "Not Found"})
             tail = parts[2] if len(parts) > 2 else None
+            if parts[0] == "pulls" and (tail or "") in thread.pulls_gone:
+                return _json(404, {"message": "Not Found"})
             if tail is None:
                 return _json(200, thread.payload)
             if tail == "comments" and parts[0] == "issues":

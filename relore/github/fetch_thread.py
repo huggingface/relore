@@ -7,10 +7,11 @@ cost local CPU instead of another day of API budget (section 5.0).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from relore.github.client import GitHubClient
+from relore.github.client import GitHubClient, GitHubError
 
 # The self-link every payload carries. `html_url` is what a document cites, so it stays.
 _DROP_KEYS = frozenset({"url", "_links", "repository", "performed_via_github_app"})
@@ -57,6 +58,9 @@ class ThreadPayload:
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
     reviews: list[dict[str, Any]] = field(default_factory=list)
     review_comments: list[dict[str, Any]] = field(default_factory=list)
+    #: Object types GitHub would not serve for this thread. Their staged rows are kept:
+    #: an empty list here means "not read", not "deleted".
+    unread: set[str] = field(default_factory=set)
 
     def raw_objects(self) -> list[tuple[str, str, dict[str, Any]]]:
         """``(object_type, object_id, payload)`` for every object in this thread."""
@@ -79,18 +83,29 @@ def fetch_thread(client: GitHubClient, repo: str, number: int) -> ThreadPayload:
     endpoint that works for both kinds, but ``merged_at`` and ``merged_by`` exist only on
     ``GET /pulls/{n}`` -- and ``merged_by`` is what section 6.2's authority fallback needs,
     available nowhere cheaper.
+
+    GitHub can list a pull request under ``/issues`` and answer 404 under ``/pulls``
+    (huggingface/trl#7121: closed, unmerged, ``pulls/{n}`` and ``pulls/{n}/reviews`` gone).
+    The 404 is permanent, so raising on it fails the thread on every pass, and since the
+    poll's checkpoint stops at the first failure, every pass re-reads the whole window
+    behind it. A ``/pulls`` 404 therefore keeps what ``/issues`` said, which already
+    carries ``merged_at``, and marks the missing kinds :attr:`ThreadPayload.unread`.
     """
     issue = client.get_json(f"repos/{repo}/issues/{number}")
     is_pr = "pull_request" in issue
     thread = dict(issue)
+    unread: set[str] = set()
     if is_pr:
-        thread.update(client.get_json(f"repos/{repo}/pulls/{number}"))
+        detail = _unless_gone(lambda: client.get_json(f"repos/{repo}/pulls/{number}"))
+        if detail is not None:
+            thread.update(detail)
 
     payload = ThreadPayload(
         repo=repo,
         number=number,
         thread_type="pr" if is_pr else "issue",
         thread=strip_mirror_fields(thread),
+        unread=unread,
     )
     if issue.get("comments"):
         payload.issue_comments = [
@@ -98,10 +113,25 @@ def fetch_thread(client: GitHubClient, repo: str, number: int) -> ThreadPayload:
             for c in client.paginate(f"repos/{repo}/issues/{number}/comments")
         ]
     if is_pr:
-        payload.reviews = [
-            strip_mirror_fields(r) for r in client.paginate(f"repos/{repo}/pulls/{number}/reviews")
-        ]
-        payload.review_comments = [
-            strip_mirror_fields(c) for c in client.paginate(f"repos/{repo}/pulls/{number}/comments")
-        ]
+        for kind, attr, tail in (
+            ("review", "reviews", "reviews"),
+            ("review_comment", "review_comments", "comments"),
+        ):
+            items = _unless_gone(
+                lambda tail=tail: list(client.paginate(f"repos/{repo}/pulls/{number}/{tail}"))
+            )
+            if items is None:
+                unread.add(kind)
+            else:
+                setattr(payload, attr, [strip_mirror_fields(item) for item in items])
     return payload
+
+
+def _unless_gone(read: Callable[[], Any]) -> Any:
+    """``read()``, or None when GitHub answers 404. Every other error still raises."""
+    try:
+        return read()
+    except GitHubError as exc:
+        if exc.status == 404:
+            return None
+        raise

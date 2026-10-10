@@ -13,6 +13,11 @@ The client and daemon must run the same version.
   derived evidence stays on the text and filters-only legs instead of widening or
   dropping the caller's scope (#75). A kind the caller already scoped still counts toward
   ranking, so a skipped derived term keeps its signal-overlap weight.
+- The poll no longer stalls on a pull request that `/issues` lists but `/pulls` answers
+  404 for (huggingface/trl#7121). The thread is indexed from `/issues`, and reviews or
+  review comments GitHub stops serving are kept rather than pruned. The stall held the
+  checkpoint, so every pass re-read the window behind it and spent the token's hourly
+  budget.
 
 ## [0.3.17] - 2026-09-18
 

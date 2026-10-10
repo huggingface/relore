@@ -50,7 +50,11 @@ TRANSIENT_TRANSPORT_ERRORS = (
 
 
 class GitHubError(RuntimeError):
-    """A response we cannot use."""
+    """A response we cannot use. ``status`` is GitHub's, or None when none came back."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class PaginationCapReached(GitHubError):
@@ -130,7 +134,9 @@ class GitHubClient:
                 break
             self._back_off(response.status_code, target, attempt, wait)
         assert last is not None
-        raise GitHubError(f"{last.status_code} from {target}: {last.text[:200]}")
+        raise GitHubError(
+            f"{last.status_code} from {target}: {last.text[:200]}", status=last.status_code
+        )
 
     def _back_off(
         self, reason: object, target: str, attempt: int, wait: float | None = None
