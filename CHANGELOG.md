@@ -6,8 +6,23 @@ The client and daemon must run the same version.
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-10-12
+
+### Added
+
+- `relore brief N` (`GET /api/v1/brief/{n}`): one page of context before reading an issue
+  or PR — the opener's record and tier, who replied and whether with write access, what
+  it closes and what else claims the same issues, earlier threads on its files (quoting a
+  review comment anchored to the file), threads carrying its error, and threads with every
+  word of its title. Every section states what it left out (#107).
+- `--before` and `--exclude` on `search`, `thread`, `inflight` and `why`, and a
+  daemon-wide pin: answer as of a past instant, withholding named threads (#94).
+  `relored export-corpus` writes the matching pre-cutoff corpus for §10's baselines (#95).
+
 ### Fixed
 
+- On Windows, `grep --path` globs match and `grep`/`copies`/`symbol` report
+  repository-relative paths; the clone's native backslashes defeated both (#105).
 - Expansion no longer replaces an explicit `--symbol` / `--file` / `--error` / `--test`
   filter with a derived term from the query text. Same-kind values are ORed, so the
   derived evidence stays on the text and filters-only legs instead of widening or
