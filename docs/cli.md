@@ -11,6 +11,7 @@ export RELORE_REPO=owner/name          # the default for --repo
 export RELORE_TOKEN=…                  # if that daemon requires one
 
 relore inflight 47720 --repo owner/name              # ask this one first
+relore brief 47720 --repo owner/name                 # one page of context, for a person
 relore why src/model.py:90 --repo owner/name         # what was said about this line
 relore search "AttributeError: 'NoneType' object has no attribute 'shape'" --kind failure
 relore search "why is this cast here" --kind rationale --file src/model.py
@@ -46,6 +47,7 @@ first; this page is the long form.
 | `search QUERY` | the index. Filters: `--error`, `--test`, `--file`, `--symbol`, `--label` (repeatable, ANDed with the text); `--kind failure\|precedent\|rationale`; `--trust authoritative\|machine`; `--repo`, `--since`, `--before`, `--exclude`, `--limit`, `--sort newest`, `--no-expand` |
 | `thread N` | one thread. `--focus "…"` orders its comments and never empties them; `--full` serves the opening post whole, reproduction included |
 | `inflight N` | is somebody already fixing this? Threads claiming to close `N`, open ones first |
+| `brief N` | one page before reading an issue or PR: who opened it, who replied (and whether with write access), what competes with it, earlier threads on its files, its error and its title's words |
 | `why PATH:LINE` | the pull request that last changed this line, and the review comments anchored near it |
 | `status` | counts, collector telemetry, and which search backend answered |
 | `grep REGEX` | a regular expression over the daemon's working clone at HEAD. `--path` globs it |
@@ -69,8 +71,8 @@ nonzero — so an agent cannot mistake "nothing in the index" for "the tool is b
 | `RELORE_REPO` | the default for `--repo`. Overridden by the flag, per call |
 | `RELORE_TOKEN` | only if that daemon requires one |
 
-**Set `RELORE_REPO` before anything else on a multi-repository daemon.** Six verbs —
-`thread`, `inflight`, `why`, `symbol`, `grep`, `copies` — refuse a bare number or path
+**Set `RELORE_REPO` before anything else on a multi-repository daemon.** Seven verbs —
+`thread`, `inflight`, `brief`, `why`, `symbol`, `grep`, `copies` — refuse a bare number or path
 rather than guess which repository it belongs to, so without a default every call in a
 single-repository session carries `--repo`. One field run passed it on twenty consecutive
 calls. `defs` and `refs` are the exception on purpose: for them `--repo` does not merely
@@ -556,6 +558,47 @@ is an answer; the same sentence followed by *"this repository has no relationshi
 all"* is not — it means the index was derived before the edge existed, and `relored derive`
 fills it. There is no trust floor here: the deployment's own bot having an open fix is
 precisely the duplicate you must not create.
+
+## "What do I need to know before reading this?"
+
+`brief` is for the person on watch duty when a thread arrives: everything above, plus the
+history nobody pastes into a new PR, on one page and in one request.
+
+```
+$ relore brief 48652 --repo huggingface/transformers
+
+huggingface/transformers#48652 pr  open  5d
+   [GPTNeoXJapanese] Fix RoPE ignoring partial_rotary_factor
+   https://github.com/huggingface/transformers/pull/48652
+   review: approved by @maintainer
+
+opened by @blipbyte [contributor claim]: 3 other PRs (2 merged), 0 other issues indexed here, the first 8mo ago
+replies: 1 other people, 1 with write access
+   @maintainer [authoritative]  2 comments, last 2d
+
+CLOSES
+   #48630 issue  open  6d  @reporter
+
+COMPETING (other threads claiming to close the same issues)
+   1. #48672 pr  closed by its author  5d  @somebody
+
+EARLIER ON THESE FILES (overlap with 2 of 2 paths changed)
+   1. #47120 pr  closed merged  3mo  @author
+      [authoritative]  3mo  review_comment  @reviewer
+      partial_rotary_factor has to come from the config…
+
+SIMILAR (every word of the title, threads above excluded)
+   none.
+```
+
+Each section is a query the index answers, never a summary: `CLOSES` and `COMPETING` are
+`inflight` run on each issue the pull request closes (for an issue, on the issue itself);
+the file section ranks earlier threads by how many of its changed paths they touched — at
+most 20, source before `tests/` and `docs/`, and the header says how many of how many. Under a pull request it quotes a review comment anchored to one of
+those files, or nothing — never the approval;
+`SAME ERROR` appears when an error was extracted from the thread. `SIMILAR` needs every word of the title and is never widened to
+any word, so it is often `none.` — a short title matched on one word lists noise. Every section says what it
+left out, and an empty one says `none.` rather than vanishing. `--json` carries all of it.
 
 ## The offline verbs
 

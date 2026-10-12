@@ -1016,6 +1016,172 @@ def render_inflight(
     return envelope("\n".join(lines).rstrip(), compact=compact)
 
 
+def render_brief(
+    payload: dict[str, Any], *, compact: bool = False, presentation: bool = False
+) -> str:
+    """One screen for a person about to read a thread (:mod:`relore.api.brief`).
+
+    Sections in the order a watcher decides in: who opened it and whether anybody is
+    already on it, then what else claims the same fix, then what the project said before.
+    Each section says what it left out; an empty one says it is empty, because "nothing
+    competes" is the answer a reader acts on.
+    """
+    head = payload.get("thread") or {}
+    repo, number = head.get("repo"), head.get("number")
+    shortened = [0]
+
+    def said(text: Any) -> str:
+        text = str(text or "")
+        if compact:
+            text, was_trimmed = trim(text)
+            shortened[0] += was_trimmed
+        return quote(text)
+
+    # The bare state: how it got there is `_event_lines`, two lines down.
+    lines = [f"{repo}#{number} {head.get('type')}  {head.get('state')}  {head.get('age')}"]
+    lines.append(f"   {said(head.get('title'))}")
+    if head.get("url"):
+        lines.append(f"   {head['url']}")
+    if head.get("labels"):
+        lines.append(f"   labels: {', '.join(head['labels'])}")
+    lines += [f"   {line}" for line in _event_lines(head)]
+
+    lines += ["", *_opener_lines(payload.get("opener"))]
+    lines += _people_lines(payload.get("people") or {})
+
+    closes = payload.get("closes") or []
+    if closes:
+        lines += ["", "CLOSES"]
+        for entry in closes:
+            thread = entry.get("thread")
+            if thread:
+                lines += _brief_thread_lines(None, thread, said)
+            else:
+                lines.append(f"   #{entry['number']} (not indexed)")
+        if payload.get("closes_total", len(closes)) > len(closes):
+            lines.append(f"   ({payload['closes_total'] - len(closes)} more, not looked up.)")
+
+    competing = payload.get("competing") or {}
+    claims = competing.get("claims") or []
+    if head.get("type") == "issue":
+        title = "IN FLIGHT (pull requests claiming to close it)"
+    else:
+        title = "COMPETING (other threads claiming to close the same issues)"
+    lines += ["", title]
+    if head.get("type") == "pr" and not closes:
+        lines.append("   none: it claims to close nothing, so there is nothing to compare.")
+    elif not claims:
+        lines.append("   none.")
+        if not competing.get("links_indexed"):
+            lines.append("   (this repository has no relationship rows, so that is not an answer.)")
+    for index, claim in enumerate(claims, start=1):
+        lines += _brief_thread_lines(index, claim, said)
+    if competing.get("total", 0) > len(claims):
+        lines.append(f"   ({competing['total'] - len(claims)} more, not shown.)")
+
+    history = payload.get("file_history")
+    if history:
+        used, total = len(history.get("paths_used") or []), history.get("paths_total", 0)
+        basis = "changed" if history.get("basis") == "changed" else "mentioned in it"
+        lines += ["", f"EARLIER ON THESE FILES (overlap with {used} of {total} paths {basis})"]
+        lines += _brief_section(history.get("threads") or [], said)
+        if history.get("untested"):
+            lines.append(
+                f"   ({history['untested']} pull request(s) have no collected file list "
+                "and could not be checked.)"
+            )
+
+    error = payload.get("same_error")
+    if error:
+        lines += ["", "SAME ERROR", f"   {said(error.get('error'))}"]
+        lines += _brief_section(error.get("threads") or [], said)
+
+    similar = payload.get("similar") or {}
+    lines += ["", "SIMILAR (every word of the title, threads above excluded)"]
+    lines += _brief_section(similar.get("threads") or [], said)
+
+    if shortened[0]:
+        lines += [
+            "",
+            f"({shortened[0]} line{'' if shortened[0] == 1 else 's'} shortened to "
+            f"{COMPACT_CHARS} characters by --compact)",
+        ]
+    if presentation:
+        lines += ["", f"read one: relore thread N --repo {repo}"]
+    return envelope("\n".join(lines).rstrip(), compact=compact)
+
+
+def _opener_lines(opener: dict[str, Any] | None) -> list[str]:
+    if not opener:
+        return ["opened by: unknown"]
+    tier = TRUST_LABEL.get(str(opener.get("trust")), str(opener.get("trust")))
+    issues, prs, merged = opener.get("issues", 0), opener.get("prs", 0), opener.get("merged", 0)
+    if not (issues or prs):
+        record = "nothing else of theirs is indexed here"
+    else:
+        record = (
+            f"{prs} other PR{'' if prs == 1 else 's'} ({merged} merged), "
+            f"{issues} other issue{'' if issues == 1 else 's'} indexed here, "
+            f"the first {opener.get('first_age')} ago"
+        )
+    return [f"opened by @{opener.get('author')} [{tier}]: {record}"]
+
+
+def _people_lines(people: dict[str, Any]) -> list[str]:
+    listed = people.get("listed") or []
+    machine = people.get("machine_comments", 0)
+    bots = f"; {machine} machine comment{'' if machine == 1 else 's'} not listed" if machine else ""
+    if not listed:
+        return [f"replies: nobody but the author{bots}"]
+    authoritative = people.get("authoritative", 0)
+    lines = [
+        f"replies: {people.get('total', len(listed))} other people, {authoritative} with "
+        f"write access{bots}"
+    ]
+    for person in listed:
+        tier = TRUST_LABEL.get(str(person.get("trust")), str(person.get("trust")))
+        count = person.get("comments", 0)
+        lines.append(
+            f"   @{person.get('author')} [{tier}]  {count} comment{'' if count == 1 else 's'}, "
+            f"last {person.get('age')}"
+        )
+    if people.get("total", 0) > len(listed):
+        lines.append(f"   ({people['total'] - len(listed)} more, not shown.)")
+    return lines
+
+
+def _brief_section(threads: list[dict[str, Any]], said) -> list[str]:
+    if not threads:
+        return ["   none."]
+    lines: list[str] = []
+    for index, thread in enumerate(threads, start=1):
+        lines += _brief_thread_lines(index, thread, said)
+        evidence = thread.get("evidence") or {}
+        if evidence.get("snippet"):
+            tier = TRUST_LABEL.get(str(evidence.get("trust")), str(evidence.get("trust")))
+            who = f"  @{evidence['author']}" if evidence.get("author") else ""
+            # Review bodies from the GraphQL pass carry no timestamp; say nothing then.
+            age = f"  {evidence['age']}" if evidence.get("age") not in (None, "?") else ""
+            lines.append(f"      [{tier}]{age}  {evidence.get('source_type')}{who}")
+            lines.append(f"      {said(evidence['snippet'])}")
+    return lines
+
+
+def _brief_thread_lines(index: int | None, thread: dict[str, Any], said) -> list[str]:
+    state = " ".join(part for part in _claim_state(thread) if part)
+    lead = f"{index}. " if index is not None else ""
+    kind, age = thread.get("type") or "", thread.get("age") or ""
+    head = f"   {lead}#{thread.get('number')} {kind}  {state}  {age}"
+    if thread.get("author"):
+        head += f"  @{thread['author']}"
+    lines = [head.rstrip()]
+    if thread.get("title"):
+        lines.append(f"      {said(thread['title'])}")
+    if thread.get("url"):
+        lines.append(f"      {thread['url']}")
+    return lines
+
+
 def render_status(payload: dict[str, Any]) -> str:
     """No envelope: this is our own numbers, not retrieved text."""
     backend = payload.get("backend") or {}

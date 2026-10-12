@@ -286,6 +286,7 @@ export RELORE_TOKEN=&lt;your token&gt;              # only if this daemon requir
       <pre>relore search "AttributeError: 'NoneType' object has no attribute 'shape'" --kind failure
 relore search "why is this cast here" --kind rationale --file src/transformers/masking_utils.py
 relore inflight 48630 --repo huggingface/transformers
+relore brief 48652 --repo huggingface/transformers
 relore thread 47720 --focus "cropping" --repo huggingface/transformers
 relore status</pre>
       <p><code>--repo</code> is required on a bare number whenever more than one

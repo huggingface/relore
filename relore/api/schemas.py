@@ -21,6 +21,7 @@ from relore.search.queries import (
     MAX_HITS,
     QUERY_KINDS,
     SORTS,
+    Claim,
     Hit,
     InflightView,
     ThreadView,
@@ -178,6 +179,27 @@ def hit_json(hit: Hit, *, compact: bool = False) -> dict[str, Any]:
     return out
 
 
+def claim_json(claim: Claim) -> dict[str, Any]:
+    """One thread's head -- state, title, author -- as ``inflight`` and ``brief`` list it."""
+    return {
+        "repo": claim.repo,
+        "number": claim.number,
+        "type": claim.thread_type,
+        "title": claim.title,
+        "url": claim.url,
+        "author": claim.author,
+        "state": claim.state,
+        "draft": claim.draft,
+        "merged": claim.merged,
+        "state_reason": claim.state_reason,
+        "closed_by": claim.closed_by,
+        "review_decision": claim.review_decision,
+        "age": claim.age,
+        "date": render_stamp(claim.created_at),
+        "relationship": claim.relationship,
+    }
+
+
 def inflight_json(view: InflightView) -> dict[str, Any]:
     """``GET /api/v1/inflight/{n}`` -- what claims to close this thread.
 
@@ -188,26 +210,7 @@ def inflight_json(view: InflightView) -> dict[str, Any]:
     return {
         "repo": view.repo,
         "number": view.number,
-        "claims": [
-            {
-                "repo": claim.repo,
-                "number": claim.number,
-                "type": claim.thread_type,
-                "title": claim.title,
-                "url": claim.url,
-                "author": claim.author,
-                "state": claim.state,
-                "draft": claim.draft,
-                "merged": claim.merged,
-                "state_reason": claim.state_reason,
-                "closed_by": claim.closed_by,
-                "review_decision": claim.review_decision,
-                "age": claim.age,
-                "date": render_stamp(claim.created_at),
-                "relationship": claim.relationship,
-            }
-            for claim in view.claims
-        ],
+        "claims": [claim_json(claim) for claim in view.claims],
         "claims_returned": len(view.claims),
         "claims_total": view.total,
         "links_indexed": view.links_indexed,

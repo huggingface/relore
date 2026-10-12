@@ -24,11 +24,15 @@ export RELORE_REPO=owner/name                  # the default for --repo
 relore inflight 48630 --repo owner/name        # is somebody already fixing this?
 ```
 
+`relore brief <number> --repo owner/name` is the same check plus the thread's people, its
+earlier history on the same files and its similar threads, on one page — for a person
+triaging a new issue or PR, or when a user asks what is known about one.
+
 `inflight` is one hop and it prevents the most expensive mistake there is — writing a patch
 for something already in review. Ask it **before** you diagnose, not after.
 
 A daemon serving more than one repository refuses a bare number rather than guess between
-them, so `--repo` is required on `thread`, `inflight`, `why`, `symbol`, `grep` and `copies`
+them, so `--repo` is required on `thread`, `inflight`, `brief`, `why`, `symbol`, `grep` and `copies`
 unless `RELORE_REPO` is set. `relore status` lists what is in scope.
 
 ## Reach for the history when grep has failed you

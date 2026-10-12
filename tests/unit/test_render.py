@@ -13,6 +13,7 @@ from __future__ import annotations
 from relore.render import (
     COMPACT_CHARS,
     OUTLINE_CAP,
+    render_brief,
     render_inflight,
     render_search,
     render_thread,
@@ -1264,3 +1265,42 @@ def test_outline_also_labels_the_indexing_visit() -> None:
     assert "indexed at 2026-09-13T13:37:34Z" in out
     assert "body and comments last indexed; later GitHub changes unknown" in out
     assert "current to" not in out
+
+
+def test_brief_states_its_caps_in_both_forms_and_advises_only_a_person() -> None:
+    page = {
+        "thread": {
+            "repo": "o/n",
+            "number": 7,
+            "type": "pr",
+            "state": "open",
+            "age": "1d",
+            "title": "fix it",
+            "author": "a",
+        },
+        "opener": {"author": "a", "trust": "reported", "issues": 0, "prs": 0, "merged": 0},
+        "people": {"listed": [], "total": 0, "authoritative": 0, "machine_comments": 2},
+        "closes": [{"number": 3, "indexed": False}],
+        "closes_total": 1,
+        "competing": {"claims": [], "total": 0, "links_indexed": 0},
+        "file_history": {
+            "basis": "changed",
+            "paths_used": ["a.py"],
+            "paths_total": 30,
+            "untested": 4,
+            "threads": [],
+        },
+        "same_error": None,
+        "similar": {"query": "fix it", "threads": []},
+    }
+    piped, terminal = render_brief(page), render_brief(page, presentation=True)
+
+    for out in (piped, terminal):
+        assert "#3 (not indexed)" in out
+        assert "2 machine comments not listed" in out
+        assert "overlap with 1 of 30 paths changed" in out
+        assert "4 pull request(s) have no collected file list" in out
+        assert "no relationship rows" in out
+        assert "nothing else of theirs is indexed here" in out
+        assert "> fix it" in out
+    assert "relore thread N" in terminal and "relore thread N" not in piped

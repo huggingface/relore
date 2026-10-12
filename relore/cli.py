@@ -2,7 +2,7 @@
 
 Two verb families, deliberately in one binary:
 
-* **history verbs** (``search``, ``thread``, ``inflight``, ``precedent``, ``why``,
+* **history verbs** (``search``, ``thread``, ``inflight``, ``brief``, ``precedent``, ``why``,
   ``status``) talk to a
   ``relored`` over HTTP. They need ``RELORE_API``, a daemon of **this same version**
   (:mod:`relore.wire` -- the two ship together and refuse to talk across a difference)
@@ -41,6 +41,7 @@ from relore import __version__, guidance
 from relore.code.api import MissingParser
 from relore.render import (
     COMPACT_CHARS,
+    render_brief,
     render_inflight,
     render_search,
     render_status,
@@ -282,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
     inflight.add_argument("number", type=int)
     inflight.add_argument("--repo", help=_REPO_HELP)
 
+    brief = sub.add_parser(
+        "brief",
+        help="one page before reading an issue or PR: who opened it, who is on it, what "
+        "competes with it, and what was said before about its files",
+    )
+    brief.add_argument("number", type=int)
+    brief.add_argument("--repo", help=_REPO_HELP)
+
     pr = sub.add_parser(
         "precedent",
         help="(NOT IMPLEMENTED YET) completed units of work and what they consisted of",
@@ -364,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         "search": _search,
         "thread": _thread,
         "inflight": _inflight,
+        "brief": _brief,
         "why": _why,
         "status": _status,
         "map": _map,
@@ -510,6 +520,26 @@ def _inflight(args: argparse.Namespace) -> int:
         lambda: (
             payload.get("rendered")
             or render_inflight(payload, compact=_compact(args), presentation=_presentation(args))
+        ),
+    )
+
+
+def _brief(args: argparse.Namespace) -> int:
+    """Everything a person on watch duty looks up by hand when a thread arrives."""
+    query = {
+        "render": str(not args.json).lower(),
+        "compact": str(_compact(args)).lower(),
+        "presentation": str(_presentation(args)).lower(),
+    }
+    if repo := _repo(args):
+        query["repo"] = repo
+    payload = _call(args, "GET", f"/api/v1/brief/{args.number}", params=query)
+    return _emit(
+        args,
+        payload,
+        lambda: (
+            payload.get("rendered")
+            or render_brief(payload, compact=_compact(args), presentation=_presentation(args))
         ),
     )
 

@@ -75,6 +75,7 @@ MINIMAL = {
     "search": ["search", "rope"],
     "thread": ["thread", "1"],
     "inflight": ["inflight", "1"],
+    "brief": ["brief", "1"],
     "precedent": ["precedent"],
     "why": ["why", "a.py:1"],
     "status": ["status"],

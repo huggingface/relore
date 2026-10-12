@@ -10,7 +10,8 @@ them:
 
 **1. Is somebody already doing this?** `inflight <issue>` — every open claimant, its state
 and its author, in one hop. The most expensive thing an agent does is patch something that
-is already in review.
+is already in review. `brief <n>` puts that, the thread's people and its earlier history
+on the same files on one page, for a person triaging something new.
 
 **2. Why is it like this?** Why a fallback cannot be removed, which approach was tried and
 rejected, what a maintainer made the last five contributors change — none of it is in the

@@ -38,7 +38,7 @@ from __future__ import annotations
 #: more than one repository. ``defs`` and ``refs`` are deliberately absent: they read your
 #: own checkout unless you pass ``--repo``, so an example without one is correct for them.
 #: ``search`` is absent because it spans the whole scope by design.
-REPO_SCOPED = ("thread", "inflight", "why", "symbol", "grep", "copies")
+REPO_SCOPED = ("thread", "inflight", "brief", "why", "symbol", "grep", "copies")
 
 #: A stand-in for a real repository in a schematic example, so a surface can show the
 #: flag's *shape* where a runnable value would be a lie.
@@ -54,6 +54,9 @@ TYPICAL ORDER
      relore symbol <qualname>            one definition's source, no clone needed
      relore copies <symbol>              every definition, grouped by whether they agree
   6. relore search "<terms>" --kind failure|rationale|precedent
+
+  For a person rather than an agent, relore brief N is steps 2 and 3 plus what was
+  said before about the same files, error and words, on one page.
 
   Step 2 sits above step 3 on purpose: `inflight` is one hop and it prevents the most
   expensive mistake there is, which is patching something already in review.
@@ -78,6 +81,7 @@ ENVIRONMENT
 _EXAMPLES = """\
 EXAMPLES
   relore inflight 48630 --repo huggingface/transformers
+  relore brief 48652 --repo huggingface/transformers
   relore thread 48630 --focus "rope" --repo huggingface/transformers
   relore why src/transformers/models/llama/modeling_llama.py:90 --repo huggingface/transformers
   relore grep 'partial_rotary_factor' --repo huggingface/transformers --path 'src/**/modeling_*.py'
@@ -120,6 +124,11 @@ Name the repository once and every verb below defaults to it:
 Before you start work on an issue, check whether somebody already is:
 
     relore inflight <issue number> --repo {repo}
+
+For one page of context on a new issue or PR -- who opened it, who is on it, what
+competes with it, what was said before about its files:
+
+    relore brief <number> --repo {repo}
 
 When one line is the question, ask about the line:
 

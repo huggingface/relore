@@ -47,6 +47,7 @@ from relore.search.queries import (
     AFTER_CURSOR,
     BODY_SLACK_CHARS,
     COMMENT_VIEW,
+    COMPACT_SNIPPET_CHARS,
     ENDS_AND_MIDDLE,
     HUMAN_TRUST,
     MACHINE_TRUST,
@@ -61,10 +62,12 @@ from relore.search.queries import (
     OUTLINE_VIEW,
     PASSAGE_OVERFETCH,
     THREAD_ENDS,
+    AuthorRecord,
     BackendInfo,
     Claim,
     Hit,
     InflightView,
+    Participant,
     SearchQuery,
     ThreadView,
     WhyView,
@@ -876,19 +879,7 @@ class SearchBackend(ABC):
         newest = nulls_last(s.threads.c.updated_at.desc())
         with self.engine.connect() as conn:
             rows = conn.execute(
-                select(
-                    s.threads.c.repo,
-                    s.threads.c.github_number,
-                    s.threads.c.thread_type,
-                    s.threads.c.title,
-                    s.threads.c.url,
-                    s.threads.c.author,
-                    s.threads.c.state,
-                    s.threads.c.merged_at,
-                    s.threads.c.created_at,
-                    s.threads.c.metadata,
-                    s.thread_links.c.relationship,
-                )
+                select(*_CLAIM_COLUMNS, s.thread_links.c.relationship)
                 .select_from(
                     s.thread_links.join(s.threads, s.thread_links.c.thread_id == s.threads.c.id)
                 )
@@ -911,29 +902,243 @@ class SearchBackend(ABC):
                 or 0
             )
 
-        claims = tuple(
-            Claim(
-                repo=row.repo,
-                number=int(row.github_number),
-                thread_type=row.thread_type,
-                title=row.title,
-                url=row.url,
-                author=row.author,
-                state=row.state,
-                # Indexed, not `row.metadata`: `Row` shadows it.
-                draft=bool((row._mapping["metadata"] or {}).get("draft")),
-                merged=row.merged_at is not None,
-                age=render_age(row.created_at),
-                created_at=row.created_at,
-                relationship=row.relationship,
-                state_reason=(row._mapping["metadata"] or {}).get("state_reason"),
-                closed_by=(row._mapping["metadata"] or {}).get("closed_by"),
-                review_decision=(row._mapping["metadata"] or {}).get("review_decision"),
-            )
-            for row in rows[:MAX_CLAIMS]
-        )
+        claims = tuple(_claim(row, row.relationship) for row in rows[:MAX_CLAIMS])
         return InflightView(
             repo=repo, number=number, claims=claims, total=len(rows), links_indexed=indexed
+        )
+
+    def thread_heads(
+        self,
+        repo: str,
+        numbers: Sequence[int],
+        *,
+        before: dt.datetime | None = None,
+        exclude: Sequence[int] = (),
+    ) -> dict[int, Claim]:
+        """State, title and author for each of ``numbers`` that is indexed, by number.
+
+        For pages that list threads found some other way -- a search hit carries no state,
+        and ``closes #N`` carries only the number. A number absent from the result is not
+        indexed (or not yet opened, under a cutoff), which is the reader's to say.
+        """
+        wanted = [n for n in dict.fromkeys(numbers) if n not in tuple(exclude)]
+        if not wanted:
+            return {}
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(*_CLAIM_COLUMNS).where(
+                    s.threads.c.repo == repo,
+                    s.threads.c.github_number.in_(wanted),
+                    *_opened_before(before),
+                )
+            ).all()
+        return {int(row.github_number): _claim(row, "") for row in rows}
+
+    def participants(
+        self,
+        repo: str,
+        number: int,
+        *,
+        before: dt.datetime | None = None,
+    ) -> tuple[tuple[Participant, ...], int]:
+        """Who wrote in this thread besides whoever opened it, and how many machine comments.
+
+        Comments and reviews only -- not the title, the body or commit messages, which are
+        the opener's and the committers' rather than anybody *engaging*. Every tier is
+        counted, so a caller can say "a maintainer is on it" and also "only bots answered".
+        The second value is the machine-authored comment count; machine authors are not
+        listed as participants, for the reason section 6.2 excludes them from reads.
+        """
+        d, t = s.documents.c, s.threads.c
+        with self.engine.connect() as conn:
+            opener = conn.execute(
+                select(t.author).where(t.repo == repo, t.github_number == number)
+            ).scalar_one_or_none()
+            rows = conn.execute(
+                select(
+                    d.author,
+                    d.trust,
+                    func.count(distinct(d.source_id)).label("comments"),
+                    func.max(d.github_created_at).label("last_at"),
+                )
+                .select_from(s.documents.join(s.threads, d.thread_id == t.id))
+                .where(
+                    t.repo == repo,
+                    t.github_number == number,
+                    d.source_type.in_(_ENGAGEMENT_SOURCES),
+                    d.author.isnot(None),
+                    *([d.author != opener] if opener else []),
+                    *written_before(before),
+                )
+                .group_by(d.author, d.trust)
+            ).all()
+        machine = sum(int(row.comments) for row in rows if row.trust == MACHINE_TRUST)
+        people = sorted(
+            (
+                Participant(
+                    author=row.author,
+                    trust=row.trust,
+                    comments=int(row.comments),
+                    last_at=row.last_at,
+                )
+                for row in rows
+                if row.trust != MACHINE_TRUST
+            ),
+            key=lambda p: (
+                p.trust != "authoritative",
+                -(p.last_at.timestamp() if p.last_at else 0.0),
+            ),
+        )
+        return tuple(people), machine
+
+    def author_record(
+        self,
+        repo: str,
+        number: int,
+        *,
+        before: dt.datetime | None = None,
+        exclude: Sequence[int] = (),
+    ) -> AuthorRecord | None:
+        """What else the person who opened ``number`` has opened in ``repo``.
+
+        ``None`` for an unindexed thread or one with no author. ``trust`` is the tier of
+        the opening post itself, so it agrees with what every other page prints for them.
+        """
+        d, t = s.documents.c, s.threads.c
+        with self.engine.connect() as conn:
+            head = conn.execute(
+                select(t.id, t.author).where(t.repo == repo, t.github_number == number)
+            ).one_or_none()
+            if head is None or not head.author:
+                return None
+            trust = conn.execute(
+                select(d.trust)
+                .where(d.thread_id == head.id, d.source_type.in_(("body", "title")))
+                .order_by(case((d.source_type == "body", 0), else_=1), d.chunk_index)
+                .limit(1)
+            ).scalar_one_or_none()
+            withheld = (number, *exclude)
+            row = conn.execute(
+                select(
+                    func.sum(case((t.thread_type == "issue", 1), else_=0)).label("issues"),
+                    func.sum(case((t.thread_type == "pr", 1), else_=0)).label("prs"),
+                    func.sum(case((t.merged_at.isnot(None), 1), else_=0)).label("merged"),
+                    func.min(t.created_at).label("first_at"),
+                ).where(
+                    t.repo == repo,
+                    t.author == head.author,
+                    t.github_number.notin_(withheld),
+                    *_opened_before(before),
+                )
+            ).one()
+        return AuthorRecord(
+            author=head.author,
+            trust=trust,
+            issues=int(row.issues or 0),
+            prs=int(row.prs or 0),
+            merged=int(row.merged or 0),
+            first_at=row.first_at,
+        )
+
+    def anchored_comments(
+        self,
+        repo: str,
+        numbers: Sequence[int],
+        paths: Sequence[str],
+        *,
+        before: dt.datetime | None = None,
+    ) -> dict[int, Hit]:
+        """Per thread, the inline review comment that best speaks to one of ``paths``.
+
+        ``brief``'s file section lists threads found by path overlap. With no text to
+        score, the passage a search returns for each is the most recent one, which on a
+        merged PR is the approval -- right row, useless quote (section 10.6's shape). A
+        comment GitHub anchored to the same file is what a reviewer said about *that*
+        file, so it is the quote. Write access first, then the longest, because "nit" and
+        a paragraph are not the same evidence. A thread with none is absent: no quote is
+        better than ``LGTM``.
+
+        Paths match exactly or on a ``/`` boundary, the same rule ``--file`` uses.
+        """
+        if not numbers or not paths:
+            return {}
+        d, t = s.documents.c, s.threads.c
+        needles = [p.strip().lstrip("./") for p in paths if p.strip().lstrip("./")]
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    t.repo,
+                    t.github_number,
+                    t.thread_type,
+                    t.title,
+                    d.source_type,
+                    d.source_id,
+                    d.url,
+                    d.author,
+                    d.trust,
+                    d.body_text,
+                    d.github_created_at,
+                    d.metadata,
+                )
+                .select_from(s.documents.join(s.threads, d.thread_id == t.id))
+                .where(
+                    t.repo == repo,
+                    t.github_number.in_(tuple(numbers)),
+                    d.source_type == "review_comment",
+                    d.chunk_index == 0,
+                    d.trust.in_(HUMAN_TRUST),
+                    *written_before(before),
+                )
+            ).all()
+        best: dict[int, Any] = {}
+        for row in rows:
+            path = str((row._mapping["metadata"] or {}).get("path") or "")
+            if not any(path == n or path.endswith("/" + n) for n in needles):
+                continue
+            key = (row.trust == "authoritative", len(row.body_text or ""))
+            number = int(row.github_number)
+            current = best.get(number)
+            if current is None or key > (
+                current.trust == "authoritative",
+                len(current.body_text or ""),
+            ):
+                best[number] = row
+        return {
+            number: Hit(
+                repo=row.repo,
+                number=number,
+                thread_type=row.thread_type,
+                title=row.title,
+                source_type=row.source_type,
+                url=row.url,
+                author=row.author,
+                trust=row.trust,
+                age=render_age(row.github_created_at),
+                snippet=snippet(row.body_text, (), limit=COMPACT_SNIPPET_CHARS),
+                score=0.0,
+                created_at=row.github_created_at,
+                source_id=str(row.source_id or ""),
+            )
+            for number, row in best.items()
+        }
+
+    def thread_error(self, repo: str, number: int) -> str | None:
+        """The first error section 5.3 extracted from this thread, as ``Type: message``.
+
+        In the form ``--error`` accepts, so ``brief`` can ask which other threads carry it.
+        """
+        e, t = s.thread_errors.c, s.threads.c
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(e.exception_type, e.message_norm)
+                .select_from(s.thread_errors.join(s.threads, e.thread_id == t.id))
+                .where(t.repo == repo, t.github_number == number, e.message_norm.isnot(None))
+                .limit(1)
+            ).one_or_none()
+        if row is None or not (row.message_norm or "").strip():
+            return None
+        return (
+            f"{row.exception_type}: {row.message_norm}" if row.exception_type else row.message_norm
         )
 
     def _body(
@@ -1349,6 +1554,46 @@ class SearchBackend(ABC):
 
 
 _SQUASHED = re.compile(r"\(#(\d+)\)\s*$")
+
+
+#: What :func:`_claim` reads. One list, so ``inflight`` and ``thread_heads`` cannot drift.
+_CLAIM_COLUMNS = (
+    s.threads.c.repo,
+    s.threads.c.github_number,
+    s.threads.c.thread_type,
+    s.threads.c.title,
+    s.threads.c.url,
+    s.threads.c.author,
+    s.threads.c.state,
+    s.threads.c.merged_at,
+    s.threads.c.created_at,
+    s.threads.c.metadata,
+)
+
+#: The documents that are somebody answering a thread rather than opening it.
+_ENGAGEMENT_SOURCES = ("issue_comment", "review", "review_comment")
+
+
+def _claim(row: Any, relationship: str) -> Claim:
+    # Indexed, not `row.metadata`: `Row` shadows it.
+    meta = row._mapping["metadata"] or {}
+    return Claim(
+        repo=row.repo,
+        number=int(row.github_number),
+        thread_type=row.thread_type,
+        title=row.title,
+        url=row.url,
+        author=row.author,
+        state=row.state,
+        draft=bool(meta.get("draft")),
+        merged=row.merged_at is not None,
+        age=render_age(row.created_at),
+        created_at=row.created_at,
+        relationship=relationship,
+        state_reason=meta.get("state_reason"),
+        closed_by=meta.get("closed_by"),
+        review_decision=meta.get("review_decision"),
+    )
 
 
 def _number_from_summary(summary: str) -> int | None:
