@@ -1291,7 +1291,7 @@ def test_brief_states_its_caps_in_both_forms_and_advises_only_a_person() -> None
             "threads": [],
         },
         "same_error": None,
-        "similar": {"query": "fix it", "widened": "any", "threads": []},
+        "similar": {"query": "fix it", "threads": []},
     }
     piped, terminal = render_brief(page), render_brief(page, presentation=True)
 

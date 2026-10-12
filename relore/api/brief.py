@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from relore.api.schemas import claim_json, hit_json, thread_json
-from relore.search import SearchQuery, search_best
+from relore.search import SearchQuery
 from relore.search.backends.base import SearchBackend
 from relore.search.queries import (
     MAX_BRIEF_PEOPLE,
@@ -246,8 +246,15 @@ def _similar(
     before: dt.datetime | None,
     withheld: Sequence[int],
 ) -> dict[str, Any]:
-    """Threads whose words match the title, with everything listed above withheld so the
-    slots go to threads this page has not already named."""
+    """Threads carrying every word of the title, with everything listed above withheld so
+    the slots go to threads this page has not already named.
+
+    **Never widened.** :func:`~relore.search.search_best` falls back to *any* word when
+    the conjunction is empty, which is right for an agent's query and wrong here: a title
+    is short, so one word carries the match -- measured, ``[CB] Fail faster`` listed a
+    tokenizer-speed PR on ``faster``. An empty section costs a person nothing; a wrong
+    row costs them a click.
+    """
     query = SearchQuery(
         repos=(repo,),
         text=title,
@@ -257,12 +264,8 @@ def _similar(
         # A brief quotes one passage per thread as a pointer, never as the answer.
         compact=True,
     )
-    hits, widened = search_best(backend, query, expand=True)
-    return {
-        "query": title,
-        "widened": widened,
-        "threads": _threads(backend, repo, hits, before, set()),
-    }
+    hits = backend.search(query)
+    return {"query": title, "threads": _threads(backend, repo, hits, before, set())}
 
 
 def _threads(

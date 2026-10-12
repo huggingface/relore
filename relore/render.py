@@ -1097,8 +1097,7 @@ def render_brief(
         lines += _brief_section(error.get("threads") or [], said)
 
     similar = payload.get("similar") or {}
-    note = " — no thread had every word, so any word" if similar.get("widened") else ""
-    lines += ["", f"SIMILAR (the title's words, threads above excluded{note})"]
+    lines += ["", "SIMILAR (every word of the title, threads above excluded)"]
     lines += _brief_section(similar.get("threads") or [], said)
 
     if shortened[0]:
