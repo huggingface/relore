@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import re
 import textwrap
 from collections.abc import Iterator
@@ -293,5 +294,6 @@ def _hash(body: list[str]) -> str:
 
 
 def _relative(root: str, path: str) -> str:
-    prefix = root.rstrip("/") + "/"
-    return path[len(prefix) :] if path.startswith(prefix) else path
+    if os.path.normcase(os.path.normpath(path)) == os.path.normcase(os.path.normpath(root)):
+        return path
+    return os.path.relpath(path, root).replace(os.sep, "/")
