@@ -47,6 +47,7 @@ from relore.search.queries import (
     AFTER_CURSOR,
     BODY_SLACK_CHARS,
     COMMENT_VIEW,
+    COMPACT_SNIPPET_CHARS,
     ENDS_AND_MIDDLE,
     HUMAN_TRUST,
     MACHINE_TRUST,
@@ -1038,6 +1039,88 @@ class SearchBackend(ABC):
             merged=int(row.merged or 0),
             first_at=row.first_at,
         )
+
+    def anchored_comments(
+        self,
+        repo: str,
+        numbers: Sequence[int],
+        paths: Sequence[str],
+        *,
+        before: dt.datetime | None = None,
+    ) -> dict[int, Hit]:
+        """Per thread, the inline review comment that best speaks to one of ``paths``.
+
+        ``brief``'s file section lists threads found by path overlap. With no text to
+        score, the passage a search returns for each is the most recent one, which on a
+        merged PR is the approval -- right row, useless quote (section 10.6's shape). A
+        comment GitHub anchored to the same file is what a reviewer said about *that*
+        file, so it is the quote. Write access first, then the longest, because "nit" and
+        a paragraph are not the same evidence. A thread with none is absent: no quote is
+        better than ``LGTM``.
+
+        Paths match exactly or on a ``/`` boundary, the same rule ``--file`` uses.
+        """
+        if not numbers or not paths:
+            return {}
+        d, t = s.documents.c, s.threads.c
+        needles = [p.strip().lstrip("./") for p in paths if p.strip().lstrip("./")]
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    t.repo,
+                    t.github_number,
+                    t.thread_type,
+                    t.title,
+                    d.source_type,
+                    d.source_id,
+                    d.url,
+                    d.author,
+                    d.trust,
+                    d.body_text,
+                    d.github_created_at,
+                    d.metadata,
+                )
+                .select_from(s.documents.join(s.threads, d.thread_id == t.id))
+                .where(
+                    t.repo == repo,
+                    t.github_number.in_(tuple(numbers)),
+                    d.source_type == "review_comment",
+                    d.chunk_index == 0,
+                    d.trust.in_(HUMAN_TRUST),
+                    *written_before(before),
+                )
+            ).all()
+        best: dict[int, Any] = {}
+        for row in rows:
+            path = str((row._mapping["metadata"] or {}).get("path") or "")
+            if not any(path == n or path.endswith("/" + n) for n in needles):
+                continue
+            key = (row.trust == "authoritative", len(row.body_text or ""))
+            number = int(row.github_number)
+            current = best.get(number)
+            if current is None or key > (
+                current.trust == "authoritative",
+                len(current.body_text or ""),
+            ):
+                best[number] = row
+        return {
+            number: Hit(
+                repo=row.repo,
+                number=number,
+                thread_type=row.thread_type,
+                title=row.title,
+                source_type=row.source_type,
+                url=row.url,
+                author=row.author,
+                trust=row.trust,
+                age=render_age(row.github_created_at),
+                snippet=snippet(row.body_text, (), limit=COMPACT_SNIPPET_CHARS),
+                score=0.0,
+                created_at=row.github_created_at,
+                source_id=str(row.source_id or ""),
+            )
+            for number, row in best.items()
+        }
 
     def thread_error(self, repo: str, number: int) -> str | None:
         """The first error section 5.3 extracted from this thread, as ``Type: message``.

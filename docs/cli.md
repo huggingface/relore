@@ -594,7 +594,8 @@ SIMILAR (every word of the title, threads above excluded)
 Each section is a query the index answers, never a summary: `CLOSES` and `COMPETING` are
 `inflight` run on each issue the pull request closes (for an issue, on the issue itself);
 the file section ranks earlier threads by how many of its changed paths they touched — at
-most 20, source before `tests/` and `docs/`, and the header says how many of how many;
+most 20, source before `tests/` and `docs/`, and the header says how many of how many. Under a pull request it quotes a review comment anchored to one of
+those files, or nothing — never the approval;
 `SAME ERROR` appears when an error was extracted from the thread. `SIMILAR` needs every word of the title and is never widened to
 any word, so it is often `none.` — a short title matched on one word lists noise. Every section says what it
 left out, and an empty one says `none.` rather than vanishing. `--json` carries all of it.

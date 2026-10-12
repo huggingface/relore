@@ -202,6 +202,19 @@ def _file_history(
         compact=True,
     )
     threads = _threads(backend, repo, backend.search(query), before, shown)
+    # For a pull request, what a reviewer said about one of these files, or nothing. An
+    # issue has no inline comments, so its matched passage -- the mention -- stands.
+    anchored = backend.anchored_comments(
+        repo, [t["number"] for t in threads if t.get("type") == "pr"], used, before=before
+    )
+    for thread in threads:
+        if thread.get("type") != "pr":
+            continue
+        if thread["number"] in anchored:
+            thread["evidence"] = hit_json(anchored[thread["number"]], compact=True)
+        else:
+            thread.pop("evidence", None)
+        thread.pop("passages", None)
     return {
         "basis": basis,
         "paths_used": list(used),

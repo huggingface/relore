@@ -163,3 +163,40 @@ def test_an_unindexed_thread_is_a_404(engine: Engine, fake: FakeGitHub) -> None:
     client = TestClient(build_app(engine), headers={CLIENT_HEADER: __version__})
 
     assert client.get("/api/v1/brief/4242").status_code == 404
+
+
+def test_the_file_section_quotes_what_a_reviewer_said_about_the_file_not_the_approval(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    """With no text to score, the newest passage wins, and on a merged PR that is the
+    approval (section 10.6). A comment anchored to the same file is the quote."""
+    fake.add_review(
+        fake.threads[5],
+        501,
+        "LGTM",
+        state="APPROVED",
+        author="maint",
+        assoc="OWNER",
+        submitted_at="2026-03-01T00:00:00Z",
+    )
+    _index(engine, fake)
+
+    (row,) = _brief(engine, 10)["file_history"]["threads"]
+
+    assert row["evidence"]["source_type"] == "review_comment"
+    assert "come from the config" in row["evidence"]["snippet"]
+
+
+def test_a_pull_request_with_no_comment_on_the_file_is_listed_without_a_quote(
+    engine: Engine, fake: FakeGitHub
+) -> None:
+    other = fake.add_pr(6, title="touch rope", merged_at="2025-07-01T00:00:00Z", author="maint")
+    fake.add_review_comment(other, 600, "unrelated file note", path="src/other.py")
+    fake.add_review(other, 601, "LGTM", state="APPROVED", author="maint", assoc="OWNER")
+    fake.add_comment(other, 602, "see src/rope.py", author="maint", assoc="OWNER")
+    _index(engine, fake)
+
+    rows = {t["number"]: t for t in _brief(engine, 10)["file_history"]["threads"]}
+
+    assert 6 in rows, "listed: it mentions the path"
+    assert "evidence" not in rows[6]
