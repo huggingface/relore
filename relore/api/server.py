@@ -36,6 +36,7 @@ from sqlalchemy import Engine, select
 
 from relore import __version__
 from relore.api import ui
+from relore.api.brief import brief_json
 from relore.api.schemas import (
     LabelRequest,
     SearchRequest,
@@ -53,7 +54,13 @@ from relore.code.refs import references
 from relore.code.survey import copies, grep, symbol_body
 from relore.code.walk import read
 from relore.duration import parse_interval
-from relore.render import render_inflight, render_search, render_thread, render_why
+from relore.render import (
+    render_brief,
+    render_inflight,
+    render_search,
+    render_thread,
+    render_why,
+)
 from relore.search import QueryError, SearchQuery, expand, open_backend, search_best
 from relore.search.queries import HUMAN_TRUST, admissible_trust
 from relore.security.untrusted import NOTICE, scrub_tree
@@ -439,6 +446,43 @@ def build_app(
                 lambda scrubbed: render_inflight(
                     scrubbed, compact=compact, presentation=presentation
                 )
+            )
+            if render
+            else None,
+        )
+
+    @app.get("/api/v1/brief/{number}")
+    def brief(
+        number: int,
+        token: Caller,
+        repo: str | None = None,
+        render: bool = False,
+        compact: bool = False,
+        presentation: bool = False,
+        before: dt.datetime | None = None,
+        exclude: Annotated[list[int], Query()] = [],  # noqa: B006 - FastAPI reads the default
+    ) -> Response:
+        """One page of context for a person about to read a thread (:mod:`relore.api.brief`).
+
+        404 like ``thread``: a brief is *about* the thread, so one we do not hold has none.
+        """
+        repo = _one_repo(token, repo)
+        as_of = deps.as_of.narrowed(before, exclude)
+        body = brief_json(
+            deps.backend,
+            repo,
+            number,
+            before=as_of.before,
+            exclude=as_of.exclude,
+            compact=compact,
+        )
+        if body is None:
+            raise HTTPException(status_code=404, detail=f"{repo}#{number} not found")
+        payload = {"notice": NOTICE, **body}
+        return _json(
+            payload,
+            render=(
+                lambda scrubbed: render_brief(scrubbed, compact=compact, presentation=presentation)
             )
             if render
             else None,

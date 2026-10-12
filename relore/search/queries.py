@@ -95,6 +95,10 @@ OUTLINE_CHARS = 60
 #: ``inflight`` answers "is somebody already fixing this?", and the useful answer is one
 #: pull request. Ten is the same cap as a result page for the same reason.
 MAX_CLAIMS = 10
+#: ``brief``'s per-section caps. A brief is one screen for a person deciding whether to
+#: look closer, and every section says how many it left out.
+MAX_BRIEF_PEOPLE = 8
+MAX_BRIEF_THREADS = 5
 
 #: The query kinds of section 6's decay table and section 6.2's trust table. The per-kind
 #: **trust floor** is applied (see :func:`trust_policy`); kind-aware **decay** is not, and
@@ -485,6 +489,35 @@ class InflightView:
     claims: tuple[Claim, ...]
     total: int
     links_indexed: int
+
+
+@dataclass(frozen=True)
+class Participant:
+    """One person who wrote in a thread they did not open, and at which tier (``brief``).
+
+    ``comments`` counts comments and reviews, not documents: a chunked comment is one.
+    """
+
+    author: str
+    trust: str
+    comments: int
+    last_at: dt.datetime | None
+
+
+@dataclass(frozen=True)
+class AuthorRecord:
+    """What the index holds about whoever opened a thread, in the same repository.
+
+    Counts of *indexed* threads, so on a sampled index they are a floor: ``brief`` says
+    so rather than calling a person with an older history a first-timer.
+    """
+
+    author: str
+    trust: str | None
+    issues: int
+    prs: int
+    merged: int
+    first_at: dt.datetime | None
 
 
 @dataclass(frozen=True)
