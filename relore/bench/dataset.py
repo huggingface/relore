@@ -72,6 +72,16 @@ class Example:
     errors: tuple[str, ...] = ()
     tests: tuple[str, ...] = ()
     relevant: tuple[Relevant, ...] = ()
+    #: Section 13's cutoff, for a set whose examples come from different points in history.
+    #: A run-level ``--before`` puts one instant on every example, which is right for a
+    #: smoke test and wrong for a set where each example's window is its own: twenty
+    #: examples drawn from twenty issues have twenty cutoffs, and a flag cannot hold them.
+    #: ISO 8601 and timezone-aware, or refused. ``None`` leaves the window to the run.
+    before: str | None = None
+    #: Threads this example withholds by number, on top of the run's own list. The cutoff
+    #: cannot express it: the thread an example was drawn from usually predates the
+    #: example's own cutoff and is still the answer.
+    exclude: tuple[int, ...] = ()
     #: ``None`` means mined but unjudged -- a candidate, not yet ground truth.
     judged_by: str | None = None
     note: str = ""
@@ -88,6 +98,23 @@ class Example:
             raise ValueError(f"{self.id}: a judged example needs at least one relevant thread")
         if not (self.query or self.files or self.symbols or self.errors or self.tests):
             raise ValueError(f"{self.id}: an example with no query and no filter asks nothing")
+        if self.before is not None and self.window() is None:
+            raise ValueError(f"{self.id}: before={self.before!r} is not a timezone-aware instant")
+
+    def window(self) -> dt.datetime | None:
+        """``before`` as an instant, or ``None`` if it is unset or unusable.
+
+        Naive is unusable rather than merely awkward: a cutoff with no zone is a different
+        instant depending on who runs the set, which is the one thing a frozen set exists to
+        prevent. ``SearchQuery`` refuses one for the same reason.
+        """
+        if self.before is None:
+            return None
+        try:
+            parsed = dt.datetime.fromisoformat(self.before.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else None
 
     @property
     def judged(self) -> bool:
@@ -100,7 +127,7 @@ class Example:
     def from_dict(cls, row: dict[str, Any]) -> Example:
         row = dict(row)
         rel = tuple(Relevant(**r) for r in row.pop("relevant", ()))
-        for key in ("files", "symbols", "errors", "tests"):
+        for key in ("files", "symbols", "errors", "tests", "exclude"):
             row[key] = tuple(row.get(key, ()))
         return cls(relevant=rel, **row)
 
