@@ -178,6 +178,14 @@ def symbol_body(root: str, qualname: str) -> SymbolBody | None:
     if not found:
         return None
     exact = [item for item in found if item[1].qualname == qualname]
+    if "." in qualname:
+        # A qualifier was asked for, so a same-leaf definition under another class is not
+        # an answer to it: `Axk2Model.forward` once returned an example file's
+        # `TestAttention.forward` (#59). A suffix still counts, for `Inner.method` of
+        # `Outer.Inner.method`. A bare name keeps taking the first same-named definition.
+        exact = exact or [item for item in found if item[1].qualname.endswith(f".{qualname}")]
+        if not exact:
+            return None
     # By an explicit key, never by the tuple: two definitions of one name in the same file
     # tie on the path, and the fallback comparison is `Definition < Definition`, which a
     # frozen dataclass does not implement. That was a 500 on `symbol`, and only for names

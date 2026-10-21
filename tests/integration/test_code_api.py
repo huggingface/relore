@@ -126,6 +126,19 @@ def test_symbol_returns_a_body_and_says_how_many_there_are(client) -> None:
     assert "def compute_default_rope_parameters" in payload["body"]
 
 
+def test_symbol_with_a_qualifier_no_class_defines_is_a_404(client) -> None:
+    """Not another class's method of the same name (#59)."""
+    tree = client.app.state.deps.clones.path(REPO)
+    (tree / "src" / "model.py").write_text(
+        "class Model:\n    def forward(self):\n        return 1\n"
+    )
+
+    response = client.get("/api/v1/code/symbol", params={"qualname": "Missing.forward"})
+
+    assert response.status_code == 404
+    assert "Missing.forward is not defined in" in response.json()["detail"]
+
+
 def test_defs_and_refs_answer_from_the_clone(client) -> None:
     defs = client.get("/api/v1/code/defs", params={"path": "src/modeling_llama.py"}).json()
     assert [d["qualname"] for d in defs["definitions"]] == ["compute_default_rope_parameters"]
