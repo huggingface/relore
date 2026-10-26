@@ -259,6 +259,7 @@ def build_app(
                 errors=tuple(body.errors),
                 tests=tuple(body.tests),
                 labels=tuple(body.labels),
+                authors=tuple(body.authors),
                 since=body.since,
                 before=as_of.before,
                 exclude=as_of.exclude,
@@ -307,6 +308,7 @@ def build_app(
                         ("errors", query.errors),
                         ("tests", query.tests),
                         ("labels", query.labels),
+                        ("authors", query.authors),
                     )
                     if values
                 },

@@ -143,13 +143,21 @@ def test_an_empty_page_carries_the_filters_that_produced_it(
     fake.add_issue(1, body="a crash in the decoder")
     _index(engine, fake, 1)
 
-    payload = _search(client, query="crash decoder", errors=["RuntimeError: boom"], labels=["bug"])
+    payload = _search(
+        client,
+        query="crash decoder",
+        errors=["RuntimeError: boom"],
+        labels=["bug"],
+        authors=["Nobody"],
+    )
 
     assert payload["count"] == 0
     assert payload["query"]["filters"]["labels"] == ["bug"]
+    assert payload["query"]["filters"]["authors"] == ["nobody"]
     assert payload["query"]["filters"]["errors"]
     rendered = render_search(payload)
     assert "--label bug" in rendered
+    assert "--author nobody" in rendered
     assert "--error " in rendered
 
 

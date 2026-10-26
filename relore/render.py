@@ -61,6 +61,7 @@ FILTER_FLAG = {
     "errors": "--error",
     "tests": "--test",
     "labels": "--label",
+    "authors": "--author",
 }
 
 

@@ -511,6 +511,8 @@ class SearchBackend(ABC):
             where.append(s.documents.c.github_created_at >= query.since)
         if query.labels:
             where.append(self._thread_has(s.thread_labels, s.thread_labels.c.label, query.labels))
+        if query.authors:
+            where.append(func.lower(s.documents.c.author).in_(query.authors))
         # The four signal filters below read tables that milestone 3's extraction pass
         # fills. They are wired now because they are versioned API surface (section 7) and
         # because a filter written later against a populated table is a filter nobody

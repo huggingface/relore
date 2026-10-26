@@ -32,7 +32,7 @@ repo-declared tool manifest, declaring it is a few lines:
 {
   "helpers": [{
     "name": "search_project_history",
-    "description": "Search this repository's issue and PR history. Flags: --error, --test, --file, --symbol, --label, --kind, --trust, --limit, --compact, --json. Use it before writing a patch to check whether this failure has precedent.",
+    "description": "Search this repository's issue and PR history. Flags: --error, --test, --file, --symbol, --label, --author, --kind, --trust, --limit, --compact, --json. Use it before writing a patch to check whether this failure has precedent.",
     "command": ["relore", "search", "--json"],
     "allow_args": true, "max_args": 12, "timeout_seconds": 30,
     "install": ["pip", "install", "relore"]

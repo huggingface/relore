@@ -61,6 +61,13 @@ class SearchRequest(BaseModel):
     errors: list[str] = []
     tests: list[str] = []
     labels: list[str] = []
+    authors: list[str] = Field(
+        default=[],
+        description=(
+            "GitHub logins; only documents they wrote (case-insensitive). Under the trust "
+            "floor like everything else, so a bot's comments also need trust='machine'"
+        ),
+    )
     since: dt.datetime | None = None
     before: dt.datetime | None = Field(
         default=None,
