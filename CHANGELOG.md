@@ -6,6 +6,13 @@ The client and daemon must run the same version.
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-10-26
+
+### Added
+
+- `--author` on `search` (`authors` on `POST /api/v1/search`): only documents a login
+  wrote, case-insensitive, combined with every other filter (#110).
+
 ## [0.3.18] - 2026-10-12
 
 ### Added
