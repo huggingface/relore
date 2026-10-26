@@ -118,6 +118,21 @@ def test_a_filter_only_query_needs_no_text(engine: Engine, fake: FakeGitHub) -> 
     assert {h.number for h in _search(engine, labels=("bug",))} == {1}
 
 
+def test_the_author_filter_matches_who_wrote_the_document(engine: Engine, fake: FakeGitHub) -> None:
+    """Document-level, not thread-level: "everything dana reviewed" is their comments on
+    other people's pull requests, not the threads she opened."""
+    pr = fake.add_pr(1, body="a body")
+    fake.add_review_comment(pr, 300, "rename this", author="Dana")
+    fake.add_review_comment(pr, 301, "agreed", author="carol")
+    fake.add_pr(2, body="another body")
+    _index(engine, fake, 1, 2)
+
+    hits = _search(engine, authors=("@dana",))
+
+    assert [(h.number, h.source_type, h.author) for h in hits] == [(1, "review_comment", "Dana")]
+    assert _search(engine, authors=("nobody",)) == []
+
+
 def test_the_file_filter_matches_a_path_named_in_prose(engine: Engine, fake: FakeGitHub) -> None:
     """Section 5.3's extraction is what makes the signal filters answer at all -- they
     were wired against empty tables at milestone 2, so this is the first test in which a

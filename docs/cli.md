@@ -44,7 +44,7 @@ first; this page is the long form.
 
 | | |
 | --- | --- |
-| `search QUERY` | the index. Filters: `--error`, `--test`, `--file`, `--symbol`, `--label` (repeatable, ANDed with the text); `--kind failure\|precedent\|rationale`; `--trust authoritative\|machine`; `--repo`, `--since`, `--before`, `--exclude`, `--limit`, `--sort newest`, `--no-expand` |
+| `search QUERY` | the index. Filters: `--error`, `--test`, `--file`, `--symbol`, `--label`, `--author` (repeatable, ANDed with the text); `--kind failure\|precedent\|rationale`; `--trust authoritative\|machine`; `--repo`, `--since`, `--before`, `--exclude`, `--limit`, `--sort newest`, `--no-expand` |
 | `thread N` | one thread. `--focus "…"` orders its comments and never empties them; `--full` serves the opening post whole, reproduction included |
 | `inflight N` | is somebody already fixing this? Threads claiming to close `N`, open ones first |
 | `brief N` | one page before reading an issue or PR: who opened it, who replied (and whether with write access), what competes with it, earlier threads on its files, its error and its title's words |

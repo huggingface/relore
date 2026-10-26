@@ -206,6 +206,7 @@ _PAGE = """
       <option value="">all repositories</option>
     </select>
     <input name="labels" placeholder="labels, comma-separated" size="18">
+    <input name="authors" placeholder="authors, comma-separated" size="18">
     <select name="sort">
       <option value="relevance">best match</option>
       <option value="newest">newest first</option>
@@ -655,6 +656,7 @@ $("#search").addEventListener("submit", async (event) => {
     // intersects this with the token's scope and can only ever narrow it.
     repos: f.get("repo") ? [f.get("repo")] : [],
     labels: split(f.get("labels")),
+    authors: split(f.get("authors")),
     sort: f.get("sort") || "relevance",
     // Always asked for: the toggle switches what is displayed, not what the server did,
     // so "view as the model sees it" cannot show a different query's rendering.
@@ -732,6 +734,7 @@ function cliFor(h, request) {
   if (request.trust) parts.push("--trust " + request.trust);
   (request.files || []).forEach((f) => parts.push("--file " + quote(f)));
   (request.labels || []).forEach((l) => parts.push("--label " + quote(l)));
+  (request.authors || []).forEach((a) => parts.push("--author " + quote(a)));
   return parts.join(" ");
 }
 

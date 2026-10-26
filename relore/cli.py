@@ -188,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--file", "a repository path"),
         ("--symbol", "a function or class name"),
         ("--label", "a GitHub label"),
+        ("--author", "a GitHub login; only what they wrote"),
     ):
         s.add_argument(flag, action="append", default=[], help=f"{help_text} (repeatable)")
     s.add_argument("--kind", help="failure | precedent | rationale")
@@ -446,6 +447,7 @@ def _search(args: argparse.Namespace) -> int:
             "errors": args.error,
             "tests": args.test,
             "labels": args.label,
+            "authors": args.author,
             "repos": _repos(args),
             "since": args.since,
             "before": args.before,

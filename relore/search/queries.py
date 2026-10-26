@@ -165,6 +165,10 @@ class SearchQuery:
     errors: tuple[str, ...] = ()
     tests: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
+    #: GitHub logins whose own documents are eligible -- who *wrote* the comment, review or
+    #: post, not who opened the thread. Matched case-insensitively because GitHub logins
+    #: are, and the trust floor still applies: a bot's words need ``trust="machine"``.
+    authors: tuple[str, ...] = ()
     since: dt.datetime | None = None
     #: An upper bound on document age: only what was written *before* this instant is
     #: eligible. ``since`` narrows a search to recent discussion; this reconstructs the
@@ -216,6 +220,11 @@ class SearchQuery:
                 f"empty window: since {self.since.isoformat()} is not before "
                 f"before {self.before.isoformat()}"
             )
+        object.__setattr__(
+            self,
+            "authors",
+            tuple(dict.fromkeys(a.strip().lstrip("@").lower() for a in self.authors if a.strip())),
+        )
         if self.sort not in SORTS:
             raise QueryError(f"unknown sort {self.sort!r}; one of {list(SORTS)}")
         if self.match not in MATCHES:
