@@ -183,9 +183,10 @@ def symbol_body(root: str, qualname: str) -> SymbolBody | None:
         # an answer to it: `Axk2Model.forward` once returned an example file's
         # `TestAttention.forward` (#59). A suffix still counts, for `Inner.method` of
         # `Outer.Inner.method`. A bare name keeps taking the first same-named definition.
-        # The provider spells the separator (relore/code/api.py:7-9): `ns::Widget::draw` answers
-        # to `Widget.draw`, so each part of the query must match a whole word, whatever joins them.
-        pattern = r"(?<!\w)" + r"\W+".join(re.escape(part) for part in qualname.split(".")) + r"\Z"
+        # A qualifier starts at a boundary: the qualname's start, a `.`, or `::`, the separators
+        # providers emit (ctags: `ns::Widget.draw`, relore/code/providers/ctags.py). Punctuation
+        # inside an identifier, as in `x·Widget.draw`, is no boundary.
+        pattern = r"(?:^|\.|::)" + re.escape(qualname) + r"\Z"
         exact = exact or [item for item in found if re.search(pattern, item[1].qualname)]
         if not exact:
             return None

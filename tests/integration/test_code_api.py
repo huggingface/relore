@@ -19,6 +19,7 @@ from relore.api.server import build_app
 from relore.api.tokens import Authenticator, Token
 from relore.code.blame import blame_line
 from relore.code.clone import CLONE_ARGS
+from relore.code.providers.ctags import CtagsProvider
 from relore.ingest.index_thread import index_thread
 from relore.render import render_why
 from relore.store import schema as s
@@ -137,6 +138,36 @@ def test_symbol_with_a_qualifier_no_class_defines_is_a_404(client) -> None:
 
     assert response.status_code == 404
     assert "Missing.forward is not defined in" in response.json()["detail"]
+
+
+def test_a_non_word_character_in_a_class_name_is_no_qualifier_boundary(client) -> None:
+    """A class named `x` + U+00B7 (a middle dot) + `Widget` is not `Widget`: a qualifier is
+    split at a dot only (#59)."""
+    tree = client.app.state.deps.clones.path(REPO)
+    (tree / "src" / "widget.py").write_text(
+        "class x·Widget:\n    def draw(self):\n        return 1\n", encoding="utf-8"
+    )
+
+    response = client.get("/api/v1/code/symbol", params={"qualname": "Widget.draw"})
+
+    assert response.status_code == 404
+    assert "Widget.draw is not defined in" in response.json()["detail"]
+
+
+def test_a_ctags_double_colon_scope_answers_to_its_dotted_qualifier(client) -> None:
+    """ctags joins a C++ scope with `::` and the name with `.`, so `ns::Widget.draw` answers
+    to `Widget.draw` (#59)."""
+    if not CtagsProvider().available():
+        pytest.skip("no universal-ctags on PATH")
+    tree = client.app.state.deps.clones.path(REPO)
+    (tree / "src" / "widget.cc").write_text(
+        "namespace ns {\nclass Widget {\npublic:\n  void draw() {}\n};\n}\n", encoding="utf-8"
+    )
+
+    response = client.get("/api/v1/code/symbol", params={"qualname": "Widget.draw"})
+
+    assert response.status_code == 200
+    assert "draw" in response.json()["body"]
 
 
 def test_defs_and_refs_answer_from_the_clone(client) -> None:
