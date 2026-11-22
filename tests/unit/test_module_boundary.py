@@ -21,7 +21,15 @@ PKG_ROOT = pathlib.Path(__file__).resolve().parents[2] / "relore"
 # just grew one, whether or not the code path is ever taken.
 DB_AND_SERVER = ("psycopg", "psycopg2", "asyncpg", "sqlalchemy", "fastapi", "uvicorn", "starlette")
 # The ML stack the client exists to avoid carrying.
-ML = ("torch", "sentence_transformers", "transformers", "lancedb", "numpy")
+ML = (
+    "torch",
+    "sentence_transformers",
+    "transformers",
+    "lancedb",
+    "numpy",
+    "fastembed",
+    "onnxruntime",
+)
 
 
 def _module_file(mod: str) -> pathlib.Path | None:

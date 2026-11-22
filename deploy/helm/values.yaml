@@ -169,6 +169,14 @@ api:
 # Section 8's relevance judgements, which section 15 calls the one thing only real
 # use can produce. A PVC rather than an emptyDir so a pod restart does not discard
 # what somebody spent an afternoon labelling.
+# Section 6.1's semantic leg. Empty turns it off everywhere. The image carries
+# BAAI/bge-small-en-v1.5; another model needs an image that bakes it in. Serve then
+# holds ~400 MiB more and each poll pod ~1.7 GiB while it embeds, so raise
+# poll.resources.limits.memory to 3Gi when turning this on. Backfill once with
+# `deploy/scripts/pass.sh embed --repo OWNER/NAME`; `relored status` shows coverage.
+embed:
+  model: ""
+
 labels:
   enabled: true
   # `/var/lib/ghlore`, not `relore`, after the 2026-09-14 rename: it is a path inside the

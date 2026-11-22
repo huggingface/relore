@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Engine, select
 
 from relore import __version__
+from relore.embedding import MODEL_ENV as EMBED_MODEL_ENV
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,6 +32,8 @@ SLICE_NAMES = ("rationale", "failure", "precedent")
 SYSTEM_NAMES = ("index", "index+expand", "github", "grep")
 
 DB_URL_ENV = "RELORE_DATABASE_URL"
+_EMBED_ENV = EMBED_MODEL_ENV
+log = logging.getLogger("relore.daemon")
 TOKEN_ENVS = ("GITHUB_TOKEN", "RELORE_GITHUB_TOKEN")
 
 
@@ -116,6 +119,16 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--repo", required=True, metavar="OWNER/NAME")
     q.add_argument("--interval", default="5m", help="30s, 5m, 2h (default: 5m)")
     q.add_argument("--once", action="store_true", help="one pass, then exit")
+
+    q = sub.add_parser(
+        "embed",
+        help=f"write the vector tier for a repo (needs the embed extra and {_EMBED_ENV})",
+    )
+    q.add_argument("--repo", required=True, metavar="OWNER/NAME")
+    q.add_argument(
+        "--batch", type=int, default=1024, help="documents per transaction (default 1024)"
+    )
+    q.add_argument("--limit", type=int, help="stop after this many documents")
 
     q = sub.add_parser(
         "clone",
@@ -290,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         "derive": _derive,
         "sample": _sample,
         "poll": _poll,
+        "embed": _embed,
         "sweep": _sweep,
         "authority": _authority,
         "mine": _mine,
@@ -496,15 +510,74 @@ def _poll(args: argparse.Namespace) -> int:
     from relore.ingest.poll import poll_forever, poll_once
 
     engine = _engine()
+    after_pass = _embed_after_pass(engine, args.repo)
     with _client() as client:
         if args.once:
             result = poll_once(engine, client, args.repo)
+            if after_pass is not None:
+                after_pass()
             print(
                 f"{result.moved} moved, {result.skipped} current, {result.indexed} indexed, "
                 f"{result.documents_written} document writes"
             )
             return 0 if result.clean else 1
-        poll_forever(engine, client, args.repo, parse_interval(args.interval))
+        poll_forever(
+            engine, client, args.repo, parse_interval(args.interval), after_pass=after_pass
+        )
+    return 0
+
+
+def _embed_after_pass(engine: Any, repo: str) -> Any:
+    """The poll's hook into the vector tier, or ``None`` when ``RELORE_EMBED_MODEL`` is
+    unset. The model loads here, once per process, not once per pass."""
+    from relore.embedding import configured
+
+    embedder = configured()
+    if embedder is None:
+        return None
+    from relore.ingest.embed import POLL_LIMIT, embed_pending
+
+    def run() -> None:
+        result = embed_pending(engine, repo, embedder, limit=POLL_LIMIT, newest_first=True)
+        if result.embedded or result.changed:
+            log.info(
+                "%s: %d embedded, %d changed underneath", repo, result.embedded, result.changed
+            )
+
+    return run
+
+
+def _bench_embedder(engine: Any) -> Any:
+    """The embedder serve would use, so ``bench`` scores what the API answers."""
+    from relore.embedding import configured
+    from relore.store.dialect import has_vector_tier
+
+    embedder = configured()
+    if embedder is not None and not has_vector_tier(engine):
+        raise SystemExit(f"{_EMBED_ENV} is set but this database has no vector tier")
+    return embedder
+
+
+def _embed(args: argparse.Namespace) -> int:
+    """Backfill the vector tier. Idempotent: a second run over an unchanged index embeds
+    nothing, because a document is pending only while its ``embedding_model`` differs."""
+    from relore.embedding import configured
+    from relore.ingest.embed import embed_pending, pending
+    from relore.store.dialect import has_vector_tier
+
+    engine = _engine()
+    if not has_vector_tier(engine):
+        raise SystemExit("no vector tier here: it needs Postgres with pgvector (section 4.1)")
+    embedder = configured()
+    if embedder is None:
+        raise SystemExit(f"set {_EMBED_ENV} to the model serve will query with")
+    before = pending(engine, args.repo, embedder.model)
+    result = embed_pending(engine, args.repo, embedder, batch=args.batch, limit=args.limit)
+    left = pending(engine, args.repo, embedder.model)
+    print(
+        f"{result.embedded} embedded with {embedder.model} ({before} were pending, {left} still "
+        f"are; {result.changed} changed underneath and wait for the next pass)"
+    )
     return 0
 
 
@@ -659,7 +732,14 @@ def _bench(args: argparse.Namespace) -> int:
         elif name == "index+expand":
             report.add(
                 run_system(
-                    IndexSystem(engine, repos, expand=True, before=before, exclude=exclude),
+                    IndexSystem(
+                        engine,
+                        repos,
+                        expand=True,
+                        before=before,
+                        exclude=exclude,
+                        embedder=_bench_embedder(engine),
+                    ),
                     scoreable,
                     window=window,
                 )
@@ -861,6 +941,7 @@ def _sample(args: argparse.Namespace) -> int:
 
 
 def _status(args: argparse.Namespace) -> int:
+    from relore.render import semantic_line
     from relore.search import open_backend
     from relore.store.migrations import describe
     from relore.store.repository import index_summary
@@ -888,6 +969,7 @@ def _status(args: argparse.Namespace) -> int:
     # Section 14.1: nothing searches the history, so this count is the only way to see the
     # capture is working. Zero after a long-running poll is a symptom, not a quiet corpus.
     print(f"history   {payload['superseded_documents']} superseded documents kept")
+    print(semantic_line({**payload, "semantic_model": os.environ.get(_EMBED_ENV) or None}))
     print(payload["passes_note"])
     for row in payload["passes"]:
         note = f" ({row['note']})" if row["note"] else ""

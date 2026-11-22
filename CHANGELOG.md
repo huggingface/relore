@@ -13,6 +13,12 @@ The client and daemon must run the same version.
   Fused with the page at the thread level, filled breadth first, listed under `legs`
   (#79).
 
+- A semantic leg for prose queries (three or more plain words), off unless
+  `RELORE_EMBED_MODEL` is set; Postgres only. `relored embed --repo` fills the vector
+  tier, every poll pass embeds what it rewrote (newest first, bounded), and `status`
+  reports how much of the index is embedded. New `[embed]` extra (fastembed, ONNX on CPU);
+  the image carries `BAAI/bge-small-en-v1.5` (#79).
+
 ### Fixed
 
 - `sort=newest` is applied after fusion, so an expanded page keeps the order asked for.

@@ -757,6 +757,16 @@ def index_summary(conn: Connection) -> dict[str, Any]:
         # that versions are being kept at all -- and "0 after a month of polling" is the
         # symptom of a capture that silently stopped working.
         "superseded_documents": count(s.documents_history),
+        # Section 6.1: how much of the index each embedding model covers. A semantic leg
+        # over a half-embedded index answers from half the corpus, which a page cannot say.
+        "embedded": {
+            str(model): int(n)
+            for model, n in conn.execute(
+                select(s.documents.c.embedding_model, func.count())
+                .where(s.documents.c.embedding_model.isnot(None))
+                .group_by(s.documents.c.embedding_model)
+            )
+        },
         "passes": passes,
         "passes_note": COLLECTOR_NOTE,
         # Section 10: a recall number from a sampled corpus is only comparable against a
