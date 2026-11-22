@@ -40,12 +40,13 @@ The daemon says which of these it can do rather than asking you to trust a docum
 
 ```
 $ relore status
-version      0.3.19
+version      0.3.20
 backend      postgresql / ts_rank_cd  capabilities: fulltext, weighted
+semantic     BAAI/bge-small-en-v1.5 · 517276 of 517276 documents embedded
 ```
 
-`capabilities` is the authoritative answer. If a vector tier ever lands, that line changes
-before this page does.
+`capabilities` is the authoritative answer for the lexical engine; `semantic` says whether
+the vector leg is on and how much of the index it can read.
 
 ---
 

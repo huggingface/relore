@@ -922,10 +922,11 @@ tells you which — that distinction is deliberate (§12).
 
 ```
 $ relore status
-version   0.3.19
+version   0.3.20
 backend   postgresql / ts_rank_cd  capabilities: fulltext, weighted
 schema    applied [1, 2, 3, 4, 5, 6, 7], pending []
 index     55168 threads, 517276 documents, 332 raw objects
+semantic  BAAI/bge-small-en-v1.5 · 517276 of 517276 documents embedded
 collector telemetry (not response freshness; use each thread's indexed_at): high-water is a source cursor; last-ok is collector completion
   huggingface/serge [threads] high-water 2026-09-03T06:55:06+00:00 last-ok …
   huggingface/transformers [threads] high-water 2026-09-12T18:41:02+00:00 last-ok …

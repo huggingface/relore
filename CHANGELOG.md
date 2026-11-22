@@ -6,13 +6,14 @@ The client and daemon must run the same version.
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-11-22
+
 ### Added
 
 - A coverage leg on every expanded search: threads ranked by the IDF of the six rarest
   query terms they hold anywhere, with plain words prefix-matched (`qwen` finds `Qwen3`).
   Fused with the page at the thread level, filled breadth first, listed under `legs`
   (#79).
-
 - A semantic leg for prose queries (three or more plain words), off unless
   `RELORE_EMBED_MODEL` is set; Postgres only. `relored embed --repo` fills the vector
   tier, every poll pass embeds what it rewrote (newest first, bounded), and `status`
