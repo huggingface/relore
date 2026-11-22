@@ -269,8 +269,8 @@ def build_app(
             )
         except QueryError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
-        legs = expand(query) if body.expand else ()
-        hits, widened = search_best(deps.backend, query, expand=body.expand)
+        legs = list(expand(query)) if body.expand else []
+        hits, widened = search_best(deps.backend, query, expand=body.expand, trace=legs)
         payload = {
             "notice": NOTICE,
             "backend": deps.backend.info().as_dict(),

@@ -26,11 +26,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Select, func, literal, literal_column, table
+from sqlalchemy import Select, func, literal, literal_column, select, table
 from sqlalchemy import text as sa_text
 
 from relore.search.backends.base import SearchBackend
-from relore.search.queries import MATCH_ALL, MATCH_ANY, BackendInfo, tokenize
+from relore.search.queries import MATCH_ALL, MATCH_ANY, BackendInfo, is_plain_word, tokenize
 from relore.store import schema as s
 
 #: Created by migration 3, external-content over ``documents``, and deliberately not in
@@ -75,6 +75,21 @@ class SqliteBackend(SearchBackend):
     def unfiltered_fts_score(self, text: str) -> Any | None:
         """Nothing. See the module docstring: FTS5 refuses ``bm25()`` outside a MATCH."""
         return None
+
+    def term_match(self, word: str) -> Any:
+        """The word quoted, and starred when it is plain -- FTS5's prefix query.
+
+        Quoted like every other term this module emits, so the only operator in the
+        expression is the ``*`` added here. A subquery rather than a join, because
+        :meth:`~relore.search.backends.base.SearchBackend.coverage` asks several of these
+        in one statement and ``MATCH`` takes one expression per table reference.
+        """
+        pattern = f'"{word}"*' if is_plain_word(word) else f'"{word}"'
+        return s.documents.c.id.in_(
+            select(literal_column("rowid"))
+            .select_from(documents_fts)
+            .where(literal_column("documents_fts").op("MATCH")(literal(pattern)))
+        )
 
     def age_days(self, column: Any) -> Any:
         """``julianday`` is in days already, and ``'now'`` is UTC -- which is what the
