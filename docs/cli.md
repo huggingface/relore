@@ -148,6 +148,16 @@ result the plain query would have found — the caller's own query is always one
 — and a query with no identifier, path or traceback in it expands to that single leg and
 costs nothing extra.
 
+Two more legs run on every expanded search, at the thread level, and the page lists them
+under `legs` when they contributed. **`coverage`** ranks threads by how rare the query's
+words are (the six rarest, counted anywhere in the thread), and matches a plain word as a
+prefix, so `qwen` finds `Qwen3`. **`semantic`** runs only when the daemon has
+`RELORE_EMBED_MODEL` set and the query is prose — three or more plain lowercase words —
+and adds the threads nearest by embedding: `"generation got slower after upgrading"`
+reaches a thread that says "prefill latency regressed". A list of identifiers never
+reaches it. `relore status` says how much of the index is embedded; a partly embedded
+index answers from that part.
+
 ## An error you just hit
 
 The highest-value shape. It lands on the PR that fixed it:

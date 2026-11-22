@@ -27,7 +27,9 @@ from relore.store.schema import documents
 REPO = "owner/name"
 MODEL = "fake/concepts-v1"
 
-#: Words that mean the same thing to the fake model, and nothing else does.
+#: Words that mean the same thing to the fake model, and nothing else does. Each concept
+#: owns a fixed axis: placing them with ``hash()`` let PYTHONHASHSEED put two concepts on
+#: one axis (3.13, seed 72) and the paraphrase test tied the threads it tells apart.
 CONCEPTS = {
     "slower": "speed",
     "slow": "speed",
@@ -36,6 +38,7 @@ CONCEPTS = {
     "tokenizer": "text",
     "vocabulary": "text",
 }
+AXES = {"speed": 0, "text": 1}
 
 
 class FakeEmbedder:
@@ -50,7 +53,7 @@ class FakeEmbedder:
         for word in text.lower().split():
             concept = CONCEPTS.get(word.strip(".,"))
             if concept:
-                vector[hash(concept) % DIMENSIONS] += 1.0
+                vector[AXES[concept]] += 1.0
         vector[DIMENSIONS - 1] += 0.01  # never the zero vector
         norm = math.sqrt(sum(x * x for x in vector))
         return [x / norm for x in vector]

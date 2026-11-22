@@ -62,7 +62,8 @@ interface; setup is in [`docs/operations.md`](docs/operations.md).
 ## Docs
 
 - [`docs/how-search-works.md`](docs/how-search-works.md) — what kind of index this is
-  (lexical and ranked, no embeddings), and what it is better and worse at than `grep`.
+  (lexical and ranked, plus an optional semantic leg for prose), and what it is better and
+  worse at than `grep`.
 - [`docs/cli.md`](docs/cli.md) — worked queries, and the empty results that are not faults.
 - [`docs/why-not-github-search.md`](docs/why-not-github-search.md) — the comparison.
 - [`docs/architecture.md`](docs/architecture.md) — what is indexed, what is deliberately
