@@ -153,6 +153,22 @@ COVERAGE_DEPTH = 50
 _PLAIN_WORD = re.compile(r"[a-z][a-z0-9]{2,}")
 
 
+#: The semantic leg ranks this many threads, from this many nearest documents.
+SEMANTIC_DEPTH = 50
+SEMANTIC_POOL = 1500
+#: The semantic leg runs on prose only: at least this many plain lowercase words, as
+#: written. A bag of identifiers gains nothing from an embedding and was measured to lose
+#: rank to it (``model_inputs device`` 1 -> 2), so gating it off left every frozen-set row
+#: where the lexical legs had it while keeping the prose gains.
+MIN_PROSE_WORDS = 3
+_PROSE_WORD = re.compile(r"(?<![\w`])[a-z]{3,}(?![\w`(])")
+
+
+def is_prose(text: str) -> bool:
+    """Whether ``text`` reads as a sentence rather than a list of identifiers."""
+    return len(_PROSE_WORD.findall(text)) >= MIN_PROSE_WORDS
+
+
 def coverage_words(text: str) -> tuple[str, ...]:
     """The caller's words, lowercased, deduplicated, in order -- the coverage leg's terms."""
     return tuple(dict.fromkeys(word.lower() for word in tokenize(text)))

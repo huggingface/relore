@@ -37,8 +37,9 @@ def content_hash(
     """Section 5.1, with the metadata included in the identity.
 
     The chunking version is inside the hash so bumping it invalidates every document
-    exactly once. When v2 adds embeddings the model id joins it, which correctly
-    invalidates everything again, once, on purpose.
+    exactly once. The embedding model is deliberately *not*: it is recorded in
+    ``embedding_model``, which every rewrite resets, so a model change re-embeds through
+    ``relored embed`` without rewriting a document or filling ``documents_history``.
 
     Metadata is in there because for an inline review comment the file and line *are*
     part of what the document is. Hashing the text alone means a comment whose line moved

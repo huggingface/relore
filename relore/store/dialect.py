@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, DateTime, Engine, Table, TypeDecorator
+from sqlalchemy import JSON, BigInteger, DateTime, Engine, Table, TypeDecorator, text
 from sqlalchemy import create_engine as _sa_create_engine
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.pool import StaticPool
@@ -187,3 +187,60 @@ def upsert(
     else:
         stmt = stmt.on_conflict_do_nothing(index_elements=list(key))
     conn.execute(stmt, rows)
+
+
+def has_vector_tier(engine_or_conn: Any) -> bool:
+    """Whether ``documents.embedding`` exists: Postgres with pgvector provisioned.
+
+    Migration 2 adds the column only when ``CREATE EXTENSION vector`` succeeds, so the
+    dialect alone does not answer it.
+    """
+    if _dialect_name(engine_or_conn) != "postgresql":
+        return False
+    conn = engine_or_conn
+    if hasattr(engine_or_conn, "connect"):
+        with engine_or_conn.connect() as conn:
+            return _has_embedding_column(conn)
+    return _has_embedding_column(conn)
+
+
+def _has_embedding_column(conn: Any) -> bool:
+    return bool(
+        conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'documents' AND column_name = 'embedding'"
+            )
+        ).first()
+    )
+
+
+def write_embeddings(conn: Any, model: str, rows: list[tuple[int, str, list[float]]]) -> int:
+    """Store ``(document id, content_hash, vector)`` rows, each only if its text is still
+    the text that was embedded. Returns how many were written.
+
+    The hash guard is the race: a poll can rewrite a document between the read that fed the
+    model and this write. Without it the old text's vector is stamped with the current
+    model and served as current; with it the row stays unembedded for the next pass.
+    """
+    if not rows:
+        return 0
+    if not has_vector_tier(conn):
+        raise RuntimeError("no vector tier: Postgres with pgvector is required to embed")
+    statement = text(
+        "UPDATE documents SET embedding = CAST(:vector AS vector), embedding_model = :model "
+        "WHERE id = :id AND content_hash = :hash"
+    )
+    result = conn.execute(
+        statement,
+        [
+            {
+                "vector": "[" + ",".join(f"{float(x):.6f}" for x in vector) + "]",
+                "model": model,
+                "id": document_id,
+                "hash": content_hash,
+            }
+            for document_id, content_hash, vector in rows
+        ],
+    )
+    return max(int(result.rowcount or 0), 0)

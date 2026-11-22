@@ -38,6 +38,8 @@ dependencies = ["httpx>=0.27"]
 server = ["SQLAlchemy>=2.0", "fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6"]
 # Production. SQLite is for tests and laptops only -- see AGENTS.md.
 postgres = ["relore[server]", "psycopg[binary]>=3.1"]
+# Section 6.1's vector tier: an ONNX model on CPU, no torch. Server side only.
+embed = ["relore[postgres]", "fastembed>=0.9"]
 # The code-lens engine. Ships no grammars.
 code = ["tree-sitter>=0.21"]
 # One extra per language. Adding a language must not touch core.

@@ -386,6 +386,7 @@ RELORE_API=http://localhost:8080 relore search "some error text"
 | `relore/store/` | schema, migrations, repository, **`dialect.py` — the only dialect branch** |
 | `relore/search/` | `queries.py` (the vocabulary and the caps), `backends/` one per dialect, `expansion.py` (§6's fan-out and the merge); `ranking.py` is the §6 weights, unbuilt |
 | `relore/api/` | `server.py` (routes + the response scrub), `tokens.py` (scope and limits), `schemas.py`, `ui.py` (the §8 page) |
+| `relore/embedding.py`, `relore/ingest/embed.py` | section 6.1's vector tier: the model behind `[embed]` (server only — invariant 1) and the `relored embed` pass. Postgres only, off unless `RELORE_EMBED_MODEL` is set. **A search reads only rows whose `embedding_model` is the configured model**, so a rewritten document's old vector is unreachable, not merely stale; the write is guarded on `content_hash` for the same reason |
 | `relore/code/` | the lens, in **both** binaries; `providers/` is one module per language, `registry.py` the entry-point seam |
 | `relore/security/` | untrusted-content envelope, secret redaction |
 | `relore/bench/` | §10's benchmark: `dataset.py` the frozen set, `mine.py` the candidates, `judge.py` the label fold, `run.py` the runner and the two baselines, `corpus.py` §13's pre-cutoff export and the signal-table post-filter |

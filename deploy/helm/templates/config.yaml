@@ -24,6 +24,12 @@ data:
   # DERIVED_COLUMN, so re-derive afterwards (`relored derive --repo <repo>`),
   # which writes only the documents whose tier actually changed.
   RELORE_BOT_ACCOUNTS: {{ join "," .Values.botAccounts | quote }}
+  {{- if .Values.embed.model }}
+  # Section 6.1's vector tier. On the ConfigMap so serve (queries) and every poll pod
+  # (embeds what each pass rewrote) agree on the model: the leg reads only rows whose
+  # `embedding_model` equals this. A fresh index needs `pass.sh embed` once.
+  RELORE_EMBED_MODEL: {{ .Values.embed.model | quote }}
+  {{- end }}
   {{- if .Values.labels.enabled }}
   # Section 8: relevance judgements append here, and section 15 calls
   # human-judged ground truth the thing only real use can produce.

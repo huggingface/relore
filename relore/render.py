@@ -1183,6 +1183,20 @@ def _brief_thread_lines(index: int | None, thread: dict[str, Any], said) -> list
     return lines
 
 
+def semantic_line(payload: dict[str, Any]) -> str:
+    """Section 6.1's tier as a coverage figure, never a bare "on": a semantic leg over a
+    half-embedded index answers from half the corpus, and a page cannot say so."""
+    embedded = payload.get("embedded") or {}
+    documents = payload.get("documents") or 0
+    model = payload.get("semantic_model")
+    if model:
+        return f"semantic  {model} · {embedded.get(model, 0)} of {documents} documents embedded"
+    if embedded:
+        counts = ", ".join(f"{name}: {n}" for name, n in sorted(embedded.items()))
+        return f"semantic  off here · embedded {counts} of {documents} documents"
+    return "semantic  off"
+
+
 def render_status(payload: dict[str, Any]) -> str:
     """No envelope: this is our own numbers, not retrieved text."""
     backend = payload.get("backend") or {}
@@ -1195,6 +1209,7 @@ def render_status(payload: dict[str, Any]) -> str:
         f"index     {payload.get('threads')} threads, {payload.get('documents')} documents, "
         f"{payload.get('raw_objects')} raw objects",
     ]
+    lines.append(semantic_line(payload))
     lines.append(payload.get("passes_note") or COLLECTOR_NOTE)
     for row in payload.get("passes") or []:
         lines.append(

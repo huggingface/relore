@@ -64,6 +64,7 @@ from relore.search.queries import (
     OUTLINE_CHARS,
     OUTLINE_VIEW,
     PASSAGE_OVERFETCH,
+    SEMANTIC_DEPTH,
     THREAD_ENDS,
     AuthorRecord,
     BackendInfo,
@@ -343,6 +344,19 @@ class SearchBackend(ABC):
             ),
             terms=tuple(word for _idf, word in chosen),
         )
+
+    def semantic(
+        self,
+        query: SearchQuery,
+        vector: Sequence[float],
+        model: str,
+        *,
+        depth: int = SEMANTIC_DEPTH,
+    ) -> list[tuple[Hit, float]]:
+        """Threads by their nearest document to ``vector``, under every filter ``search``
+        applies. Nothing here: only Postgres with pgvector has a vector tier (section 4.1).
+        """
+        return []
 
     def hits_for_documents(self, ids: Sequence[int], query: SearchQuery) -> dict[int, Hit]:
         """Documents by id, rendered as hits for ``query``. Unscored: a leg that found them

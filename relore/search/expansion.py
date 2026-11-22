@@ -42,7 +42,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from relore.ingest.extract import extract_signals, is_symbol
 from relore.search.queries import (
@@ -51,6 +51,7 @@ from relore.search.queries import (
     MAX_HITS_PER_THREAD,
     Hit,
     SearchQuery,
+    is_prose,
     tokenize,
 )
 from relore.search.ranking import RankSpec
@@ -79,8 +80,18 @@ RRF_K = 60
 #: is the one place a leg is preferred over another -- and the caller's own text wins.
 LEG_NAMES = ("text", "error", "test", "symbol", "file", "filters")
 
-#: The name :func:`search_best` gives the coverage leg in a ``trace``.
+#: The names :func:`search_best` gives its thread-level legs in a ``trace``.
 COVERAGE_LEG = "coverage"
+SEMANTIC_LEG = "semantic"
+
+
+class QueryEmbedder(Protocol):
+    """What the semantic leg needs from :class:`relore.embedding.Embedder`."""
+
+    model: str
+
+    def query(self, text: str) -> list[float]: ...
+
 
 #: A date earlier than any GitHub timestamp, for sorting an undated hit last.
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
@@ -331,6 +342,7 @@ def search_best(
     *,
     expand: bool = True,
     trace: list[Leg] | None = None,
+    embedder: QueryEmbedder | None = None,
 ) -> tuple[list[Hit], str]:
     """Section 6's search, asked so that a query with terms in it never dead-ends.
 
@@ -365,6 +377,10 @@ def search_best(
     caller's rarest terms, and the strict page above is fused with it rather than replaced
     -- see :func:`fuse_threads`. It is appended to ``trace`` when it contributed, so the
     page can say which terms it weighed.
+
+    **And the semantic leg, on prose only, when an ``embedder`` is given** (section 6.1).
+    Nearest documents under the same filters, one per thread, fused the same way. A query
+    of identifiers never reaches it (:func:`~relore.search.queries.is_prose`).
     """
 
     def ask(asked: SearchQuery) -> list[Hit]:
@@ -374,14 +390,26 @@ def search_best(
     widened = ""
     if not hits and len(tokenize(query.text)) >= MIN_WIDEN_TERMS:
         hits, widened = ask(replace(query, match=MATCH_ANY)), WIDENED_ANY_TERM
-    if not expand:
-        return hits, widened
-    found = backend.coverage(query) if query.text.strip() else None
-    if found is None or not found.threads:
+    if not expand or not query.text.strip():
+        return (_presented(query, hits) if expand else hits), widened
+    legs: list[tuple[str, Sequence[tuple[Hit, float]]]] = []
+    found = backend.coverage(query)
+    if found.threads:
+        legs.append((COVERAGE_LEG, found.threads))
+        if trace is not None:
+            trace.append(Leg(name=COVERAGE_LEG, query=query, term=" ".join(found.terms)))
+    # After the widening decision, never before it: a nearest-neighbour leg is never
+    # empty, so deciding on the fused page would let it veto the widening and leave a page
+    # the vectors alone chose -- measured on relore#79's "Qwen prefill regression".
+    if embedder is not None and is_prose(query.text):
+        near = backend.semantic(query, embedder.query(query.text), embedder.model)
+        if near:
+            legs.append((SEMANTIC_LEG, near))
+            if trace is not None:
+                trace.append(Leg(name=SEMANTIC_LEG, query=query, term=embedder.model))
+    if not legs:
         return _presented(query, hits), widened
-    if trace is not None:
-        trace.append(Leg(name=COVERAGE_LEG, query=query, term=" ".join(found.terms)))
-    return fuse_threads(query, hits, [(COVERAGE_LEG, found.threads)]), widened
+    return fuse_threads(query, hits, legs), widened
 
 
 def fuse_threads(
