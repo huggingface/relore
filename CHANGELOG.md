@@ -6,6 +6,17 @@ The client and daemon must run the same version.
 
 ## [Unreleased]
 
+### Added
+
+- A coverage leg on every expanded search: threads ranked by the IDF of the six rarest
+  query terms they hold anywhere, with plain words prefix-matched (`qwen` finds `Qwen3`).
+  Fused with the page at the thread level, filled breadth first, listed under `legs`
+  (#79).
+
+### Fixed
+
+- `sort=newest` is applied after fusion, so an expanded page keeps the order asked for.
+
 ## [0.3.19] - 2026-10-26
 
 ### Added

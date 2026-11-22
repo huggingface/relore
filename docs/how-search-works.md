@@ -16,6 +16,10 @@ index and it is not grep.
   the terms disjoined, ranked by how many of them each document carries** — so it comes back
   with something and says on the page that it widened. That is a starting point, not an
   answer, and it runs only from an empty page.
+- Every expanded search also runs a **coverage leg**: threads ranked by how *rare* the
+  query terms they hold are (IDF), counting a term anywhere in the thread, over the six
+  rarest terms you sent. A plain word matches as a prefix there, so `qwen` finds `Qwen3`.
+  It is fused with the page above at the thread level and listed under `legs`.
 - **Errors, test ids, symbols, file paths and labels are extracted from the prose at ingest
   and matched exactly** as filters. `--error` is the one fuzzy case: a containment test
   against a *normalized* form, so a pasted traceback whose numbers differ still matches.
@@ -103,6 +107,11 @@ see them, and they come back labelled.
    the errors, test ids, symbols and paths it can recognise, plus your text as written.
    Each leg is asked separately and the results merged. A bare identifier is read as a
    symbol as well as text; a pasted traceback stops being one long AND.
+   Then the **coverage leg**: the six rarest of your words, each weighed `ln(N / df)`
+   and counted once per thread, prefix-matched when plain. Its threads are fused with the
+   legs' page by reciprocal rank (ties share a rank), and the page is rebuilt breadth
+   first — every thread's best hit, then second hits — so a thread only it found is not
+   pushed off by a third hit from a thread already shown.
 3. **Filters.** `EXISTS` against the signal tables above — exact, except `--error`.
 4. **Trust floor**, from `--kind` or `--trust`. Never lowered by a request.
 5. **Score.** A weighted sum, ordered by how *specific* the evidence is — meaning how many
@@ -176,13 +185,14 @@ reaches the right thread when it carries an error, a path, a test id or an ident
 because those become their own legs. That covers the agent-shaped questions; it does not
 cover an English paraphrase with no anchor in it, and that limitation is real.
 
-The measured shape, Recall@10 / MRR, over 139 judged examples against both baselines:
+The measured shape, Recall@10 / MRR, over 139 judged examples against both baselines
+(`relore` re-measured 2026-11-22 with the coverage leg; the baselines are unchanged):
 
 | slice | n | relore | GitHub search | grep |
 | --- | --- | --- | --- | --- |
-| `failure` | 48 | **1.000** / 0.927 | 0.875 / 0.743 | 0.000 / 0.000 |
-| `precedent` | 40 | **0.525** / **0.286** | 0.325 / 0.102 | 0.200 / 0.130 |
-| `rationale`, leak-free | 7 | 0.857 / 0.602 | 0.857 / 0.618 | 0.143 / 0.036 |
+| `failure` | 48 | **1.000** / 0.917 | 0.875 / 0.743 | 0.000 / 0.000 |
+| `precedent` | 40 | **0.575** / **0.291** | 0.325 / 0.102 | 0.200 / 0.130 |
+| `rationale`, leak-free | 7 | 0.857 / 0.614 | 0.857 / 0.618 | 0.143 / 0.036 |
 | `rationale`, leak-free, second corpus | 9 | **1.000** / **0.944** | 0.667 / 0.611 | 0.667 / 0.389 |
 
 Two caveats the numbers do not carry on their own: the judgements are model-made, not

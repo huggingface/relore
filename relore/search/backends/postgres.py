@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import Select, case, func, literal, literal_column
 
 from relore.search.backends.base import SearchBackend
-from relore.search.queries import MATCH_ALL, MATCH_ANY, BackendInfo, tokenize
+from relore.search.queries import MATCH_ALL, MATCH_ANY, BackendInfo, is_plain_word, tokenize
 
 _FTS = literal_column("documents.fts")
 
@@ -90,6 +90,17 @@ class PostgresBackend(SearchBackend):
             _FTS, func.to_tsquery("english", " | ".join(terms)), RANK_NORM_SCALE
         )
         return self._coverage(terms) + density / literal(float(len(terms) + 1))
+
+    def term_match(self, word: str) -> Any:
+        """``to_tsquery`` with ``:*`` for a plain word, ``plainto_tsquery`` otherwise.
+
+        The raw ``to_tsquery`` is safe here for the same reason as in :meth:`_tsquery_any`:
+        a plain word is ``[a-z][a-z0-9]+``, so it cannot reach the parser as syntax. A
+        stopword lexes to the empty query, matches nothing, and drops out of the leg.
+        """
+        if is_plain_word(word):
+            return _FTS.op("@@")(func.to_tsquery("english", f"{word}:*"))
+        return _FTS.op("@@")(func.plainto_tsquery("english", word))
 
     def _coverage(self, terms: list[str]) -> Any:
         """How many of ``terms`` this row carries at all, over how many were asked.

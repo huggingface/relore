@@ -39,6 +39,7 @@ change and is applied by the backend.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
@@ -77,6 +78,12 @@ RRF_K = 60
 #: The legs, in section 6's order. Order is the tie-break when two hits fuse equal, so it
 #: is the one place a leg is preferred over another -- and the caller's own text wins.
 LEG_NAMES = ("text", "error", "test", "symbol", "file", "filters")
+
+#: The name :func:`search_best` gives the coverage leg in a ``trace``.
+COVERAGE_LEG = "coverage"
+
+#: A date earlier than any GitHub timestamp, for sorting an undated hit last.
+_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
 
 #: What :func:`search_best` reports when it had to widen. One value today, and a name
 #: rather than a boolean so a second rung can be added without changing the field.
@@ -319,7 +326,11 @@ def _dedupe_legs(legs: Sequence[Leg]) -> list[Leg]:
 
 
 def search_best(
-    backend: SearchBackend, query: SearchQuery, *, expand: bool = True
+    backend: SearchBackend,
+    query: SearchQuery,
+    *,
+    expand: bool = True,
+    trace: list[Leg] | None = None,
 ) -> tuple[list[Hit], str]:
     """Section 6's search, asked so that a query with terms in it never dead-ends.
 
@@ -348,12 +359,102 @@ def search_best(
     it is set whenever widening was *tried* -- including when it also came back empty,
     which is the more useful of the two answers: it tells the caller their words are not
     the problem and reformulating them again will not help.
+
+    **Then the coverage leg, on every expanded search** (huggingface/relore#79). It is a
+    ranked leg like expansion's, not a widening: the threads it adds and reorders hold the
+    caller's rarest terms, and the strict page above is fused with it rather than replaced
+    -- see :func:`fuse_threads`. It is appended to ``trace`` when it contributed, so the
+    page can say which terms it weighed.
     """
 
     def ask(asked: SearchQuery) -> list[Hit]:
         return search_expanded(backend, asked) if expand else backend.search(asked)
 
     hits = ask(query)
-    if hits or len(tokenize(query.text)) < MIN_WIDEN_TERMS:
-        return hits, ""
-    return ask(replace(query, match=MATCH_ANY)), WIDENED_ANY_TERM
+    widened = ""
+    if not hits and len(tokenize(query.text)) >= MIN_WIDEN_TERMS:
+        hits, widened = ask(replace(query, match=MATCH_ANY)), WIDENED_ANY_TERM
+    if not expand:
+        return hits, widened
+    found = backend.coverage(query) if query.text.strip() else None
+    if found is None or not found.threads:
+        return _presented(query, hits), widened
+    if trace is not None:
+        trace.append(Leg(name=COVERAGE_LEG, query=query, term=" ".join(found.terms)))
+    return fuse_threads(query, hits, [(COVERAGE_LEG, found.threads)]), widened
+
+
+def fuse_threads(
+    query: SearchQuery,
+    lexical: Sequence[Hit],
+    legs: Sequence[tuple[str, Sequence[tuple[Hit, float]]]],
+) -> list[Hit]:
+    """Reciprocal-rank fusion at the **thread** level, then the page rebuilt from it.
+
+    The lexical page ranks a thread by where it first appears; each extra leg ranks its
+    threads by score, and **equal scores share a rank**, so a tie inside a leg is broken by
+    the other legs rather than by iteration order. A thread the lexical page already holds
+    keeps its own hits, in their own order and within their cap; a thread only a leg found
+    is represented by the document that leg chose. The caller's ``sort`` is applied last,
+    because it orders a page and never selects one (section 10.7).
+    """
+    present = [scored for _name, scored in legs if scored]
+    if not present:
+        return list(lexical)
+    position: dict[tuple[str, int], int] = {}
+    on_page: dict[tuple[str, int], list[Hit]] = {}
+    for hit in lexical:
+        thread = (hit.repo, hit.number)
+        position.setdefault(thread, len(position) + 1)
+        on_page.setdefault(thread, []).append(hit)
+    fused = {thread: 1.0 / (RRF_K + rank) for thread, rank in position.items()}
+    agreed: dict[tuple[str, int], list[str]] = {thread: ["lexical"] for thread in position}
+    stand_in: dict[tuple[str, int], Hit] = {}
+    for name, scored in legs:
+        for thread, (rank, hit) in _shared_ranks(scored).items():
+            fused[thread] = fused.get(thread, 0.0) + 1.0 / (RRF_K + rank)
+            agreed.setdefault(thread, []).append(name)
+            stand_in.setdefault(thread, hit)
+
+    order = sorted(fused, key=lambda t: (-fused[t], position.get(t, len(fused) + 1), t))
+    # Breadth first: every thread's best hit in fused order, then second hits, and so on.
+    # Filling depth first spent a page of ten on three threads' second and third hits and
+    # pushed the threads only a leg found off it -- measured, it erased the leg's recall.
+    queues = {thread: list(on_page.get(thread) or [stand_in[thread]]) for thread in order}
+    page: list[Hit] = []
+    while len(page) < query.limit and any(queues.values()):
+        for thread in order:
+            if not queues[thread]:
+                continue
+            hit = queues[thread].pop(0)
+            breakdown = dict(hit.breakdown)
+            breakdown["thread_fused"] = round(fused[thread], 6)
+            breakdown["thread_legs"] = float(len(agreed[thread]))
+            page.append(replace(hit, breakdown=breakdown))
+            if len(page) == query.limit:
+                break
+    return _presented(query, page)
+
+
+def _presented(query: SearchQuery, page: list[Hit]) -> list[Hit]:
+    """The caller's ``sort``, applied to a page already chosen. Fusion orders by fused
+    score, so without this an expanded ``newest`` page came back in relevance order."""
+    if query.sort == "newest":
+        page = sorted(
+            page, key=lambda hit: (hit.created_at is None, -(hit.created_at or _EPOCH).timestamp())
+        )
+    return page
+
+
+def _shared_ranks(
+    scored: Sequence[tuple[Hit, float]],
+) -> dict[tuple[str, int], tuple[int, Hit]]:
+    """Competition ranks over one leg's threads: ``1, 1, 3`` for scores ``9, 9, 4``."""
+    ranks: dict[tuple[str, int], tuple[int, Hit]] = {}
+    previous: float | None = None
+    rank = 0
+    for at, (hit, score) in enumerate(scored, start=1):
+        if score != previous:
+            rank, previous = at, score
+        ranks.setdefault((hit.repo, hit.number), (rank, hit))
+    return ranks
