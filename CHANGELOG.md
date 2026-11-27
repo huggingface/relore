@@ -6,6 +6,11 @@ The client and daemon must run the same version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `symbol Class.method` answers "not defined" when no such class defines the method, rather
+  than returning the first same-named method of another class (#59).
+
 ## [0.3.20] - 2026-11-22
 
 ### Added

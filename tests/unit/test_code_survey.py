@@ -215,6 +215,37 @@ def test_a_symbol_that_is_not_there_is_none_rather_than_an_error(tree) -> None:
     assert symbol_body(str(tree), "not_a_function") is None
 
 
+def test_a_qualifier_that_matches_no_class_is_none_not_another_classs_method(tmp_path) -> None:
+    """`Axk2Model.forward` returned an example's `TestAttention.forward` (#59): the qualifier
+    was dropped and the first same-named method won. A wrong answer the caller cannot see."""
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "a.py").write_text(
+        "class TestAttention:\n    def forward(self):\n        return 1\n"
+    )
+    (tmp_path / "m.py").write_text(
+        "class AXK2Model:\n    def forward(self, x):\n        return x\n"
+    )
+
+    assert symbol_body(str(tmp_path), "Axk2Model.forward") is None
+    assert symbol_body(str(tmp_path), "ZzzNotARealClass.forward") is None
+    found = symbol_body(str(tmp_path), "AXK2Model.forward")
+    assert found is not None and found.path == "m.py"
+    # A bare name has no qualifier to contradict, so it still picks among all of them.
+    bare = symbol_body(str(tmp_path), "forward")
+    assert bare is not None and bare.total == 2
+
+
+def test_a_partial_qualifier_still_resolves_a_nested_definition(tmp_path) -> None:
+    (tmp_path / "m.py").write_text(
+        "class Outer:\n    class Inner:\n        def run(self):\n            return 1\n"
+    )
+
+    found = symbol_body(str(tmp_path), "Inner.run")
+
+    assert found is not None
+    assert found.definition.qualname == "Outer.Inner.run"
+
+
 def test_two_definitions_of_a_name_in_one_file(tmp_path) -> None:
     """A 500 in production: selection sorted `(path, Definition, body)` tuples, so two
     definitions in the same file tied on the path and fell through to comparing
