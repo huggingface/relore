@@ -64,3 +64,24 @@ kubectl -n ghlore exec deploy/ghlore -- relored derive --repo <repo>
 ```
 
 That writes only the documents whose tier actually changed.
+
+## Turning on the semantic leg
+
+Off by default. `embed.model: BAAI/bge-small-en-v1.5` (the model the image carries)
+puts `RELORE_EMBED_MODEL` on the ConfigMap, which serve and every poll pod read:
+
+1. Raise `poll.resources.limits.memory` to `3Gi`; a poll pod holds ~1.7 GiB while
+   it embeds. Serve needs ~400 MiB more and fits its default.
+2. Deploy, then backfill once per repository. The poll loop embeds what each pass
+   rewrites; it does not embed the history:
+
+   ```bash
+   deploy/scripts/pass.sh embed --repo <repo> --context <ctx> -f
+   ```
+
+   It is idempotent and resumable: a document is pending while its
+   `embedding_model` differs from the configured one, which is also what a model
+   change or an edited comment looks like.
+3. `relore status` prints `semantic  <model> · N of M documents embedded`. The leg
+   reads only rows embedded by the configured model, so until N reaches M it
+   answers from part of the corpus — that line is how you tell.

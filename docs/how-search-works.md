@@ -5,8 +5,8 @@ tools it sits next to: `grep`, a semantic index, and Funes.*
 
 ## TL;DR
 
-**Lexical, ranked, with exact structural filters. No embeddings.** It is not a semantic
-index and it is not grep.
+**Lexical, ranked, with exact structural filters — plus an optional semantic leg for prose
+queries.** It is not a semantic index and it is not grep.
 
 - Prose is **Postgres full-text**: `to_tsvector('english', …)` with a GIN index, queried
   with `plainto_tsquery` and ranked by `ts_rank_cd`. It **stems** — searching `load` finds
@@ -16,6 +16,10 @@ index and it is not grep.
   the terms disjoined, ranked by how many of them each document carries** — so it comes back
   with something and says on the page that it widened. That is a starting point, not an
   answer, and it runs only from an empty page.
+- Every expanded search also runs a **coverage leg**: threads ranked by how *rare* the
+  query terms they hold are (IDF), counting a term anywhere in the thread, over the six
+  rarest terms you sent. A plain word matches as a prefix there, so `qwen` finds `Qwen3`.
+  It is fused with the page above at the thread level and listed under `legs`.
 - **Errors, test ids, symbols, file paths and labels are extracted from the prose at ingest
   and matched exactly** as filters. `--error` is the one fuzzy case: a containment test
   against a *normalized* form, so a pasted traceback whose numbers differ still matches.
@@ -24,8 +28,10 @@ index and it is not grep.
   semantics.
 - Results are **ranked with a weighted score**, and every hit carries its author's standing
   and its age.
-- `documents.embedding vector(384)` exists in the schema and **nothing writes it**. Vector
-  search is a v2 option, not a shipped feature.
+- **A semantic leg, off unless configured** (`RELORE_EMBED_MODEL`, Postgres only). On a
+  query of at least three plain words it adds the threads nearest by embedding, fused like
+  every other leg. A query of identifiers never reaches it. `status` says how much of the
+  index is embedded.
 
 If what you want is a *semantic* index of what **your own agent** did last week, that is a
 different tool and it exists: see [Funes](#versus-funes) below.
@@ -34,12 +40,13 @@ The daemon says which of these it can do rather than asking you to trust a docum
 
 ```
 $ relore status
-version      0.3.19
+version      0.3.20
 backend      postgresql / ts_rank_cd  capabilities: fulltext, weighted
+semantic     BAAI/bge-small-en-v1.5 · 517276 of 517276 documents embedded
 ```
 
-`capabilities` is the authoritative answer. If a vector tier ever lands, that line changes
-before this page does.
+`capabilities` is the authoritative answer for the lexical engine; `semantic` says whether
+the vector leg is on and how much of the index it can read.
 
 ---
 
@@ -103,6 +110,11 @@ see them, and they come back labelled.
    the errors, test ids, symbols and paths it can recognise, plus your text as written.
    Each leg is asked separately and the results merged. A bare identifier is read as a
    symbol as well as text; a pasted traceback stops being one long AND.
+   Then the **coverage leg**: the six rarest of your words, each weighed `ln(N / df)`
+   and counted once per thread, prefix-matched when plain. Its threads are fused with the
+   legs' page by reciprocal rank (ties share a rank), and the page is rebuilt breadth
+   first — every thread's best hit, then second hits — so a thread only it found is not
+   pushed off by a third hit from a thread already shown.
 3. **Filters.** `EXISTS` against the signal tables above — exact, except `--error`.
 4. **Trust floor**, from `--kind` or `--trust`. Never lowered by a request.
 5. **Score.** A weighted sum, ordered by how *specific* the evidence is — meaning how many
@@ -155,34 +167,35 @@ is **grep for what the code is, relore for why it is that way.**
 
 ## Versus a semantic (embedding) index
 
-**What a vector index would buy:** paraphrase. "why is the mask cast here" would find a
-comment that says "we upcast before the softmax for numerical stability" with no shared
-terms. That is the real gap, and this index does not close it.
+**What a vector index buys:** paraphrase. "generation got slower" reaches a thread that
+says "prefill latency regressed" with no shared term. That gap is real, and the semantic
+leg is what closes part of it.
 
-**What it would cost, and why it is not here yet:**
+**Why it is a leg and not the index:**
 
-- An embedding model in the ingest path and a vector column that must be recomputed for
-  every document when the model changes — the `content_hash` already reserves room for the
-  model id so that a swap invalidates everything exactly once, on purpose.
-- It would not help the queries this is measured on. The strongest signals in this corpus
-  are machine-minted strings — a normalized exception, a pytest node id — where exact
-  matching is not a poor approximation of semantics, it is the correct answer.
-- Nobody could tell whether it helped. Ranking changes here are gated on a frozen
-  evaluation set, and adding a tier whose benefit is assumed is how a ranking becomes
-  unfalsifiable.
+- The strongest signals in this corpus are machine-minted strings — a normalized
+  exception, a pytest node id — where exact matching is the correct answer. Alone, the
+  vectors lost a tenth of the `failure` slice and returned nothing on queries with no text.
+- So it is gated to prose (three or more plain lowercase words) and fused with the lexical
+  legs at the thread level. On a bag of identifiers it was measured to cost rank and gain
+  nothing; gated off there, no frozen-set row moved except `failure` MRR, up.
+- It reads only documents embedded by the configured model. An edit resets that, so a
+  rewritten comment's old vector is never served; `relored embed` (and every poll pass,
+  newest first) brings it back.
 
-**What is used instead:** the expansion fan-out. A question with no shared terms still
-reaches the right thread when it carries an error, a path, a test id or an identifier,
-because those become their own legs. That covers the agent-shaped questions; it does not
-cover an English paraphrase with no anchor in it, and that limitation is real.
+Measured on prose built from the evaluation sets' own text (precedent excerpts and bot
+findings, answer references stripped), `BAAI/bge-small-en-v1.5`: precedent R@10 / MRR
+0.575 / 0.388 → **0.650 / 0.437**, bot-finding rationale MRR 0.743 → 0.929. Larger models
+(bge-base, Qwen3-Embedding 0.6B and 4B) were not better in aggregate.
 
-The measured shape, Recall@10 / MRR, over 139 judged examples against both baselines:
+The measured shape, Recall@10 / MRR, over 139 judged examples against both baselines
+(`relore` re-measured 2026-11-22 with the coverage leg; the baselines are unchanged):
 
 | slice | n | relore | GitHub search | grep |
 | --- | --- | --- | --- | --- |
-| `failure` | 48 | **1.000** / 0.927 | 0.875 / 0.743 | 0.000 / 0.000 |
-| `precedent` | 40 | **0.525** / **0.286** | 0.325 / 0.102 | 0.200 / 0.130 |
-| `rationale`, leak-free | 7 | 0.857 / 0.602 | 0.857 / 0.618 | 0.143 / 0.036 |
+| `failure` | 48 | **1.000** / 0.917 | 0.875 / 0.743 | 0.000 / 0.000 |
+| `precedent` | 40 | **0.575** / **0.291** | 0.325 / 0.102 | 0.200 / 0.130 |
+| `rationale`, leak-free | 7 | 0.857 / 0.614 | 0.857 / 0.618 | 0.143 / 0.036 |
 | `rationale`, leak-free, second corpus | 9 | **1.000** / **0.944** | 0.667 / 0.611 | 0.667 / 0.389 |
 
 Two caveats the numbers do not carry on their own: the judgements are model-made, not

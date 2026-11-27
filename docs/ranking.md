@@ -111,6 +111,16 @@ caveats:
    unchanged by it — which is the third time on this list that the benchmark was necessary
    and not sufficient.
 
+8. **Coverage and semantic legs, for relore#79** (§10.8, 0.3.20). `qwen` never matched
+   `qwen3`, and the widened score above still has no IDF — `transformers` + `got` scored like
+   `qwen3` + `prefill`. A **coverage** leg ranks threads by `ln(N/df)` over the six rarest
+   query terms they hold anywhere, plain words prefix-matched, fused by thread-level RRF and
+   filled breadth first: frozen `precedent` Recall@10 0.500 → **0.575**, nothing regressed.
+   A **semantic** leg (`bge-small-en-v1.5`), gated to prose because on identifier queries
+   it only cost rank, leaves every frozen row unchanged except `failure` MRR 0.917 → 0.927,
+   and moves prose queries built from the sets' own text: `precedent` 0.575 / 0.388 →
+   **0.650 / 0.437** (Recall@10 / MRR). Larger models were not better in aggregate.
+
 Two limits the table does not show. `failure` is close to circular — its ground truth is
 "the threads carrying this error" and `--error` matches exactly that — so no weight set can
 be fitted on it, and it is the one slice that lost a little MRR (0.938 → 0.927, at unchanged

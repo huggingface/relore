@@ -21,6 +21,7 @@ score what the filter would not have matched.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import operator
 import re
 from abc import ABC, abstractmethod
@@ -48,6 +49,8 @@ from relore.search.queries import (
     BODY_SLACK_CHARS,
     COMMENT_VIEW,
     COMPACT_SNIPPET_CHARS,
+    COVERAGE_DEPTH,
+    COVERAGE_MAX_TERMS,
     ENDS_AND_MIDDLE,
     HUMAN_TRUST,
     MACHINE_TRUST,
@@ -61,6 +64,7 @@ from relore.search.queries import (
     OUTLINE_CHARS,
     OUTLINE_VIEW,
     PASSAGE_OVERFETCH,
+    SEMANTIC_DEPTH,
     THREAD_ENDS,
     AuthorRecord,
     BackendInfo,
@@ -72,6 +76,7 @@ from relore.search.queries import (
     ThreadView,
     WhyView,
     admissible_trust,
+    coverage_words,
     render_age,
     render_stamp,
     snippet,
@@ -80,6 +85,14 @@ from relore.search.queries import (
 )
 from relore.search.ranking import WEIGHTS, RankSpec, half_life
 from relore.store import schema as s
+
+
+class Coverage(NamedTuple):
+    """What :meth:`SearchBackend.coverage` found: threads best first, each represented by
+    one document and carrying its score, and the terms that were weighed."""
+
+    threads: tuple[tuple[Hit, float], ...]
+    terms: tuple[str, ...]
 
 
 class _Comments(NamedTuple):
@@ -221,6 +234,16 @@ class SearchBackend(ABC):
     def age_days(self, column: Any) -> Any:
         """Age of ``column`` in days, as a float expression. Section 6's decay input."""
 
+    @abstractmethod
+    def term_match(self, word: str) -> Any:
+        """A predicate on ``documents``: this row's text holds ``word``.
+
+        One lowercased word from :func:`~relore.search.queries.coverage_words`. A plain
+        word (:func:`~relore.search.queries.is_plain_word`) matches as a prefix, so
+        ``qwen`` finds ``qwen3``; anything else matches as the engine tokenizes it. Used
+        by :meth:`coverage` only -- admission everywhere else stays ``fts_filter``'s.
+        """
+
     # -- search ----------------------------------------------------------
 
     def search(self, query: SearchQuery, *, rank_as: RankSpec | None = None) -> list[Hit]:
@@ -241,6 +264,127 @@ class SearchBackend(ABC):
         spec = rank_as or RankSpec.of(query)
         with self.engine.connect() as conn:
             return [self._hit(row, query) for row in conn.execute(self._select(query, spec))]
+
+    def coverage(
+        self,
+        query: SearchQuery,
+        *,
+        depth: int = COVERAGE_DEPTH,
+        max_terms: int = COVERAGE_MAX_TERMS,
+    ) -> Coverage:
+        """Threads ranked by the IDF of the rarest query terms they hold (relore#79).
+
+        ``ts_rank_cd`` has no IDF, so once terms are disjoined a thread holding
+        ``transformers`` and ``got`` scores like one holding ``qwen3`` and ``prefill``.
+        Here a term counts once per **thread** -- the title can carry one and a comment
+        the next -- and weighs ``ln(N / df)`` over the documents this query may read. Only
+        the ``max_terms`` rarest terms count, which is what keeps a pasted paragraph from
+        ranking by its common words.
+
+        Every filter ``search`` applies is applied here, the trust floor included, so the
+        leg can reorder and add only rows the caller was already allowed to read. Each
+        thread comes back with the one document carrying the most of that weight, which is
+        what represents it on a page.
+        """
+        words = coverage_words(query.text)
+        if not query.repos or not words:
+            return Coverage(threads=(), terms=())
+        scope = s.documents.join(s.threads, s.documents.c.thread_id == s.threads.c.id)
+        where = self._filters(query)
+        with self.engine.connect() as conn:
+            total = conn.execute(select(func.count()).select_from(scope).where(*where)).scalar()
+            weighed: list[tuple[float, str]] = []
+            for word in words:
+                df = conn.execute(
+                    select(func.count()).select_from(scope).where(*where, self.term_match(word))
+                ).scalar()
+                if df:
+                    weighed.append((math.log(max(int(total or 0), 1) / int(df)), word))
+            weighed.sort(key=lambda pair: (-pair[0], pair[1]))
+            chosen = weighed[:max_terms]
+            if not chosen:
+                return Coverage(threads=(), terms=())
+
+            flags = [
+                case((self.term_match(word), literal(idf)), else_=literal(0.0)).label(f"t{i}")
+                for i, (idf, word) in enumerate(chosen)
+            ]
+            docs = (
+                select(s.documents.c.id, s.documents.c.thread_id, *flags)
+                .select_from(scope)
+                .where(*where, or_(*(self.term_match(word) for _idf, word in chosen)))
+                .subquery("matched")
+            )
+            term_columns = [docs.c[f"t{i}"] for i in range(len(chosen))]
+            per_thread = [docs.c.thread_id]
+            ranked = select(
+                docs.c.id,
+                docs.c.thread_id,
+                reduce(
+                    operator.add,
+                    (func.max(column).over(partition_by=per_thread) for column in term_columns),
+                ).label("thread_score"),
+                func.row_number()
+                .over(
+                    partition_by=per_thread,
+                    order_by=[reduce(operator.add, term_columns).desc(), docs.c.id],
+                )
+                .label("pick"),
+            ).subquery("ranked")
+            rows = conn.execute(
+                select(ranked.c.id, ranked.c.thread_score)
+                .where(ranked.c.pick == 1)
+                .order_by(ranked.c.thread_score.desc(), ranked.c.id)
+                .limit(depth)
+            ).all()
+        hits = self.hits_for_documents([int(row.id) for row in rows], query)
+        return Coverage(
+            threads=tuple(
+                (hits[int(row.id)], float(row.thread_score)) for row in rows if int(row.id) in hits
+            ),
+            terms=tuple(word for _idf, word in chosen),
+        )
+
+    def semantic(
+        self,
+        query: SearchQuery,
+        vector: Sequence[float],
+        model: str,
+        *,
+        depth: int = SEMANTIC_DEPTH,
+    ) -> list[tuple[Hit, float]]:
+        """Threads by their nearest document to ``vector``, under every filter ``search``
+        applies. Nothing here: only Postgres with pgvector has a vector tier (section 4.1).
+        """
+        return []
+
+    def hits_for_documents(self, ids: Sequence[int], query: SearchQuery) -> dict[int, Hit]:
+        """Documents by id, rendered as hits for ``query``. Unscored: a leg that found them
+        by something other than this query's text carries its own score."""
+        if not ids:
+            return {}
+        stmt = (
+            select(
+                s.documents.c.id,
+                s.threads.c.repo,
+                s.threads.c.github_number,
+                s.threads.c.thread_type,
+                s.threads.c.title,
+                s.documents.c.source_type,
+                s.documents.c.source_id,
+                s.documents.c.chunk_index,
+                s.documents.c.url,
+                s.documents.c.author,
+                s.documents.c.trust,
+                s.documents.c.body_text,
+                s.documents.c.github_created_at,
+                literal(0.0).label("score"),
+            )
+            .select_from(s.documents.join(s.threads, s.documents.c.thread_id == s.threads.c.id))
+            .where(s.documents.c.id.in_(list(ids)))
+        )
+        with self.engine.connect() as conn:
+            return {int(row.id): self._hit(row, query) for row in conn.execute(stmt)}
 
     def files_blind_spot(self, query: SearchQuery) -> int:
         """How many threads ``--file`` could not *test*, rather than did not match.

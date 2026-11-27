@@ -148,6 +148,16 @@ result the plain query would have found — the caller's own query is always one
 — and a query with no identifier, path or traceback in it expands to that single leg and
 costs nothing extra.
 
+Two more legs run on every expanded search, at the thread level, and the page lists them
+under `legs` when they contributed. **`coverage`** ranks threads by how rare the query's
+words are (the six rarest, counted anywhere in the thread), and matches a plain word as a
+prefix, so `qwen` finds `Qwen3`. **`semantic`** runs only when the daemon has
+`RELORE_EMBED_MODEL` set and the query is prose — three or more plain lowercase words —
+and adds the threads nearest by embedding: `"generation got slower after upgrading"`
+reaches a thread that says "prefill latency regressed". A list of identifiers never
+reaches it. `relore status` says how much of the index is embedded; a partly embedded
+index answers from that part.
+
 ## An error you just hit
 
 The highest-value shape. It lands on the PR that fixed it:
@@ -922,10 +932,11 @@ tells you which — that distinction is deliberate (§12).
 
 ```
 $ relore status
-version   0.3.19
+version   0.3.20
 backend   postgresql / ts_rank_cd  capabilities: fulltext, weighted
 schema    applied [1, 2, 3, 4, 5, 6, 7], pending []
 index     55168 threads, 517276 documents, 332 raw objects
+semantic  BAAI/bge-small-en-v1.5 · 517276 of 517276 documents embedded
 collector telemetry (not response freshness; use each thread's indexed_at): high-water is a source cursor; last-ok is collector completion
   huggingface/serge [threads] high-water 2026-09-03T06:55:06+00:00 last-ok …
   huggingface/transformers [threads] high-water 2026-09-12T18:41:02+00:00 last-ok …

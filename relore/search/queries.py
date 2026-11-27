@@ -139,6 +139,45 @@ MATCH_ALL = "all"
 MATCH_ANY = "any"
 MATCHES = (MATCH_ALL, MATCH_ANY)
 
+#: The coverage leg (huggingface/relore#79) scores a *thread* by the IDF of the query terms
+#: it holds anywhere -- the title can carry one and a comment the next. Only the rarest
+#: terms count: a pasted paragraph otherwise scores every common word, and the longest
+#: thread wins. Six was measured against four and all-terms on both frozen sets.
+COVERAGE_MAX_TERMS = 6
+#: How many threads the leg ranks. Deeper than a page, because fusion can promote a thread
+#: the leg placed below the fold.
+COVERAGE_DEPTH = 50
+#: What a coverage term may be prefix-matched as: a plain word. ``qwen`` then matches
+#: ``qwen3`` and ``qwen2``, which a versioned-name corpus needs and an exact match misses;
+#: an identifier with an underscore, a leading digit or under three characters stays exact.
+_PLAIN_WORD = re.compile(r"[a-z][a-z0-9]{2,}")
+
+
+#: The semantic leg ranks this many threads, from this many nearest documents.
+SEMANTIC_DEPTH = 50
+SEMANTIC_POOL = 1500
+#: The semantic leg runs on prose only: at least this many plain lowercase words, as
+#: written. A bag of identifiers gains nothing from an embedding and was measured to lose
+#: rank to it (``model_inputs device`` 1 -> 2), so gating it off left every frozen-set row
+#: where the lexical legs had it while keeping the prose gains.
+MIN_PROSE_WORDS = 3
+_PROSE_WORD = re.compile(r"(?<![\w`])[a-z]{3,}(?![\w`(])")
+
+
+def is_prose(text: str) -> bool:
+    """Whether ``text`` reads as a sentence rather than a list of identifiers."""
+    return len(_PROSE_WORD.findall(text)) >= MIN_PROSE_WORDS
+
+
+def coverage_words(text: str) -> tuple[str, ...]:
+    """The caller's words, lowercased, deduplicated, in order -- the coverage leg's terms."""
+    return tuple(dict.fromkeys(word.lower() for word in tokenize(text)))
+
+
+def is_plain_word(word: str) -> bool:
+    """Whether :data:`COVERAGE_MAX_TERMS`' leg may match ``word`` as a prefix."""
+    return bool(_PLAIN_WORD.fullmatch(word))
+
 
 class QueryError(ValueError):
     """A request that cannot be served as asked. Distinct from an empty result, which is

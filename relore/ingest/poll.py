@@ -231,11 +231,16 @@ def poll_forever(
     *,
     sleep: Callable[[float], None] = time.sleep,
     max_passes: int | None = None,
+    after_pass: Callable[[], None] | None = None,
 ) -> list[PollResult]:
+    """``after_pass`` runs once per pass -- ``relored embed`` when the vector tier is on,
+    so a document the pass rewrote is embedded again before the next one."""
     results: list[PollResult] = []
     while max_passes is None or len(results) < max_passes:
         started = time.monotonic()
         results.append(poll_once(engine, client, repo))
+        if after_pass is not None:
+            after_pass()
         result = results[-1]
         log.info(
             "%s: %d moved, %d current, %d indexed, %d document writes, %d signal writes%s",

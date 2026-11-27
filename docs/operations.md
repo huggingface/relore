@@ -57,6 +57,26 @@ flight. `--merged-only` restores the older behaviour for a run that wants preced
 extractor and re-deriving costs minutes of local CPU instead of another day of API budget.
 `poll` does both for the threads that moved, so the split is invisible in steady state.
 
+## The semantic leg (optional, Postgres only)
+
+```bash
+pip install 'relore[embed]'                          # fastembed: ONNX on CPU, no torch
+export RELORE_EMBED_MODEL=BAAI/bge-small-en-v1.5     # serve, poll and embed must agree
+relored embed --repo owner/name                      # the history; idempotent, resumable
+```
+
+Set the same `RELORE_EMBED_MODEL` for `serve` (it embeds each prose query) and for
+`poll` (each pass embeds what it rewrote, newest first, at most 1,024 documents, so a
+fresh index never stalls the loop — the history is `embed`'s job). A document is pending
+while its `embedding_model` differs from the configured one, which is also what an edit or
+a model change looks like, and search reads only rows embedded by that model. A mass
+rewrite — a full `derive`, an authority refresh that moves tiers — re-pends what it
+touched: run `embed` again. Measured on a laptop CPU: about 60 documents a second with
+1.7 GiB resident while embedding; serve needs ~400 MiB more. `relore status` prints
+`semantic  <model> · N of M documents embedded`. Unset, nothing embeds and nothing searches
+by vector; on SQLite there is no vector tier and both `serve` and `embed` refuse the
+variable.
+
 ## The working clone (issue #7)
 
 `symbol`, `grep`, `copies` and `defs`/`refs --repo` read a clone per repository, checked
@@ -144,6 +164,9 @@ relored judge --set benchmarks/owner-name.jsonl --labels labels.jsonl
 relored bench --repo owner/name --set benchmarks/owner-name.jsonl \
   --system index --system index+expand --system github
 ```
+
+With `RELORE_EMBED_MODEL` set, `index+expand` is scored with the semantic leg and reported
+as `index+expand+semantic`, so a number never hides which one it measured.
 
 `--system grep --clone <checkout>` adds the second baseline; it reads a working tree, so
 point it at a detached worktree of `origin/main`, not a branch someone is working on.

@@ -232,6 +232,7 @@ class IndexSystem:
         expand: bool = False,
         before: dt.datetime | None = None,
         exclude: Sequence[int] = (),
+        embedder: Any = None,
     ) -> None:
         from relore.bench.corpus import SignalPostFilter
 
@@ -245,7 +246,12 @@ class IndexSystem:
         #: How many hits the post-filter took off this run's pages -- reported rather than
         #: inferred from a recall that moved. Zero means the leak did not touch the number.
         self.post_filtered = 0
+        #: Section 6.1's semantic leg, scored as its own system name so a report can never
+        #: pass a number measured with vectors off as one measured with them on.
+        self.embedder = embedder if expand else None
         self.name = "index+expand" if expand else "index"
+        if self.embedder is not None:
+            self.name = "index+expand+semantic"
 
     def search(self, example: Example) -> tuple[tuple[ThreadRef, ...], str]:
         query = SearchQuery(
@@ -265,7 +271,9 @@ class IndexSystem:
         # adds is reachable only from an empty page, and neither frozen set has one (both
         # report `empty 0`), so it cannot move either score -- which is the point. What it
         # would catch is a future set that *does* contain an empty row.
-        hits, _widened = search_best(self.backend, query, expand=self.expand)
+        hits, _widened = search_best(
+            self.backend, query, expand=self.expand, embedder=self.embedder
+        )
         kept = self.post.keep(hits, query)
         self.post_filtered += len(hits) - len(kept)
         return _dedupe((hit.repo, hit.number) for hit in kept), ""

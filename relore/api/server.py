@@ -62,6 +62,7 @@ from relore.render import (
     render_why,
 )
 from relore.search import QueryError, SearchQuery, expand, open_backend, search_best
+from relore.search.expansion import QueryEmbedder
 from relore.search.queries import HUMAN_TRUST, admissible_trust
 from relore.security.untrusted import NOTICE, scrub_tree
 from relore.store import schema as s
@@ -130,9 +131,12 @@ class Deps:
         labels_path: Path | None = None,
         clone_root: str | None = None,
         as_of: AsOf | None = None,
+        embedder: QueryEmbedder | None = None,
     ) -> None:
         self.engine = engine
         self.backend = open_backend(engine)
+        #: Section 6.1's semantic leg, or ``None`` when ``RELORE_EMBED_MODEL`` is unset.
+        self.embedder = embedder
         self.auth = auth or Authenticator()
         self.labels_path = labels_path
         self.as_of = as_of or AsOf()
@@ -160,6 +164,7 @@ class Deps:
             # `status` says so, and says nothing when there is nothing to say.
             **({"as_of": self.as_of.as_dict()} if self.as_of.pinned else {}),
             **summary,
+            "semantic_model": self.embedder.model if self.embedder else None,
         }
 
 
@@ -201,8 +206,16 @@ def build_app(
     labels_path: Path | None = None,
     clone_root: str | None = None,
     as_of: AsOf | None = None,
+    embedder: QueryEmbedder | None = None,
 ) -> FastAPI:
-    deps = Deps(engine, auth=auth, labels_path=labels_path, clone_root=clone_root, as_of=as_of)
+    deps = Deps(
+        engine,
+        auth=auth,
+        labels_path=labels_path,
+        clone_root=clone_root,
+        as_of=as_of,
+        embedder=embedder,
+    )
     app = FastAPI(title="relore", version=__version__, docs_url="/api/docs")
     app.state.deps = deps
 
@@ -269,8 +282,10 @@ def build_app(
             )
         except QueryError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
-        legs = expand(query) if body.expand else ()
-        hits, widened = search_best(deps.backend, query, expand=body.expand)
+        legs = list(expand(query)) if body.expand else []
+        hits, widened = search_best(
+            deps.backend, query, expand=body.expand, trace=legs, embedder=deps.embedder
+        )
         payload = {
             "notice": NOTICE,
             "backend": deps.backend.info().as_dict(),
@@ -896,8 +911,24 @@ def serve(
             " (--trust-network: the network is the perimeter)" if not loopback else "",
         )
 
+    from relore.embedding import configured
+    from relore.store.dialect import has_vector_tier
+
+    embedder = configured()
+    if embedder is not None and not has_vector_tier(engine):
+        engine.dispose()
+        raise SystemExit(
+            "relored serve: RELORE_EMBED_MODEL is set but this database has no vector tier "
+            "(Postgres with pgvector, section 4.1). Unset it, or provision pgvector."
+        )
     labels = os.environ.get(LABELS_ENV)
-    app = build_app(engine, auth=auth, labels_path=Path(labels) if labels else None, as_of=as_of)
+    app = build_app(
+        engine,
+        auth=auth,
+        labels_path=Path(labels) if labels else None,
+        as_of=as_of,
+        embedder=embedder,
+    )
     if as_of is not None and as_of.pinned:
         # WARNING for the same reason the open-index line is: a pinned daemon is not a
         # normal one, and serving a benchmark cutoff to real callers would be silently

@@ -9,13 +9,25 @@ read off the table.
 from __future__ import annotations
 
 import operator
+from collections.abc import Sequence
 from functools import reduce
 from typing import Any
 
-from sqlalchemy import Select, case, func, literal, literal_column
+from sqlalchemy import Select, case, func, literal, literal_column, select
 
 from relore.search.backends.base import SearchBackend
-from relore.search.queries import MATCH_ALL, MATCH_ANY, BackendInfo, tokenize
+from relore.search.queries import (
+    MATCH_ALL,
+    MATCH_ANY,
+    SEMANTIC_DEPTH,
+    SEMANTIC_POOL,
+    BackendInfo,
+    Hit,
+    SearchQuery,
+    is_plain_word,
+    tokenize,
+)
+from relore.store import schema as s
 
 _FTS = literal_column("documents.fts")
 
@@ -90,6 +102,54 @@ class PostgresBackend(SearchBackend):
             _FTS, func.to_tsquery("english", " | ".join(terms)), RANK_NORM_SCALE
         )
         return self._coverage(terms) + density / literal(float(len(terms) + 1))
+
+    def semantic(
+        self,
+        query: SearchQuery,
+        vector: Sequence[float],
+        model: str,
+        *,
+        depth: int = SEMANTIC_DEPTH,
+    ) -> list[tuple[Hit, float]]:
+        """The nearest documents under ``search``'s filters, one per thread, best first.
+
+        Only rows embedded by ``model`` are read: the reconcile resets ``embedding_model``
+        when a document is rewritten, so a vector of text that no longer exists is never
+        served. The distance is exact -- no ANN index -- which is the right trade at the
+        size this was measured on; an HNSW index is the change when it stops being.
+        """
+        if not query.repos:
+            return []
+        # Floats this method formats itself, so inlining them is not an injection path, and
+        # it keeps the parameter out of a statement Postgres would otherwise re-plan.
+        literal_vector = "[" + ",".join(f"{float(x):.6f}" for x in vector) + "]"
+        distance = literal_column(f"(documents.embedding <=> '{literal_vector}'::vector)")
+        stmt = (
+            select(s.documents.c.id, s.documents.c.thread_id, distance.label("distance"))
+            .select_from(s.documents.join(s.threads, s.documents.c.thread_id == s.threads.c.id))
+            .where(*self._filters(query), s.documents.c.embedding_model == model)
+            .order_by(distance)
+            .limit(SEMANTIC_POOL)
+        )
+        nearest: dict[int, tuple[int, float]] = {}
+        with self.engine.connect() as conn:
+            for row in conn.execute(stmt):
+                nearest.setdefault(int(row.thread_id), (int(row.id), float(row.distance)))
+                if len(nearest) == depth:
+                    break
+        hits = self.hits_for_documents([doc for doc, _d in nearest.values()], query)
+        return [(hits[doc], 1.0 - dist) for doc, dist in nearest.values() if doc in hits]
+
+    def term_match(self, word: str) -> Any:
+        """``to_tsquery`` with ``:*`` for a plain word, ``plainto_tsquery`` otherwise.
+
+        The raw ``to_tsquery`` is safe here for the same reason as in :meth:`_tsquery_any`:
+        a plain word is ``[a-z][a-z0-9]+``, so it cannot reach the parser as syntax. A
+        stopword lexes to the empty query, matches nothing, and drops out of the leg.
+        """
+        if is_plain_word(word):
+            return _FTS.op("@@")(func.to_tsquery("english", f"{word}:*"))
+        return _FTS.op("@@")(func.plainto_tsquery("english", word))
 
     def _coverage(self, terms: list[str]) -> Any:
         """How many of ``terms`` this row carries at all, over how many were asked.

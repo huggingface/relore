@@ -36,8 +36,8 @@ usage() {
   cat <<'EOF'
 Usage: deploy/scripts/pass.sh VERB --repo OWNER/NAME [options]
 
-VERB is one of backfill | derive | fetch | authority | sweep -- the passes long
-enough to outlive a terminal. A full `derive` is what a change to extraction, the
+VERB is one of backfill | derive | fetch | authority | sweep | embed -- the passes
+long enough to outlive a terminal. A full `derive` is what a change to extraction, the
 trust derivation or the relationship edges needs before it reaches the index.
 
 Options:
@@ -70,8 +70,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$verb" in
-  backfill|derive|fetch|authority|sweep) ;;
-  "") echo "error: which pass? one of backfill|derive|fetch|authority|sweep" >&2; usage >&2; exit 2 ;;
+  backfill|derive|fetch|authority|sweep|embed) ;;
+  "") echo "error: which pass? one of backfill|derive|fetch|authority|sweep|embed" >&2; usage >&2; exit 2 ;;
   *) echo "error: $verb is not a pass this script runs" >&2; usage >&2; exit 2 ;;
 esac
 [[ -n "$repo" ]] || { echo "error: --repo is required" >&2; exit 2; }
